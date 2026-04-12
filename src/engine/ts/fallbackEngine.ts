@@ -2980,10 +2980,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const depth = 1 - rel / renderDistance;
       const y = height * carYBase + depth * depth * height * carYSpan;
       const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
-      const scaleBase = mobileView ? 0.44 : 0.38;
-      const scaleRange = mobileView ? 0.56 : 0.64;
-      const maxScale = mobileView ? 1.0 : 1.08;
-      const scale = clamp(scaleBase + depth * scaleRange, scaleBase, maxScale);
+      const scale = mobileView ? clamp(0.44 + depth * 0.56, 0.44, 1.0) : 0.42 + depth * 1.03;
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
       drawCarSprite(
         renderCtx,
