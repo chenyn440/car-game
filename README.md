@@ -106,10 +106,10 @@ sudo bash scripts/setup-car-game-pm2-tencent.sh \
 
 ### 2) 日常更新代码并重启服务
 
-先在本机修改 `scripts/deploy-remote-build.sh` 顶部参数，然后执行：
+建议使用环境变量传入服务器信息（避免把主机/IP/密钥路径写进脚本）：
 
 ```bash
-bash scripts/deploy-remote-build.sh
+SSH_USER_HOST=ubuntu@1.2.3.4 SSH_KEY_PATH=~/.ssh/id_rsa REMOTE_PROJECT_DIR=/home/car-game bash scripts/deploy-remote-build.sh
 ```
 
 该脚本会自动执行：
