@@ -1,0 +1,33 @@
+{
+  "name": "arcade-rush",
+  "private": true,
+  "version": "0.1.0",
+  "description": "QQ飞车风格网页竞速原型（本地 SQLite 排行榜）",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:api": "node server/leaderboard-server.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "build:wasm": "bash scripts/build-wasm.sh"
+  },
+  "keywords": [
+    "phaser",
+    "typescript",
+    "sqlite",
+    "h5-game"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^5.1.0",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8"
+  }
+}
