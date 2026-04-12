@@ -26,11 +26,14 @@ app.innerHTML = `
           </div>
           <div class="control-race">
             <button id="camera-btn" class="secondary">镜头（C）</button>
-            <button id="hud-toggle-btn" class="secondary">HUD收起</button>
             <button id="quit-btn" class="warn">退出比赛</button>
           </div>
         </div>
         <div id="status" class="status top-status">准备就绪，输入昵称后开始比赛。</div>
+      </div>
+
+      <div class="hud-float-tools">
+        <button id="hud-toggle-btn" class="secondary">HUD收起</button>
       </div>
 
       <aside id="leaderboard-drawer" class="leaderboard-drawer">

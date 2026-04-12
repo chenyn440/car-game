@@ -26,7 +26,7 @@ const ENDGAME_PROGRESS = 0.8;
 const RIVAL_SURGE_BASE_MS = 2800;
 const AI_CATCHUP_START_DISTANCE = 120;
 const AI_CATCHUP_SPAN_DISTANCE = 500;
-const AI_FINISH_GRACE_MS = 15_000;
+const AI_FINISH_GRACE_MS = 30_000;
 
 type DifficultyTier = 'normal' | 'hard_mid' | 'hard_pro';
 

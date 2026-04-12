@@ -236,7 +236,8 @@ textarea {
 }
 
 .control-full button,
-.control-race button {
+.control-race button,
+.hud-float-tools button {
   height: 38px;
   padding: 0 13px;
   font-size: 13px;
@@ -253,28 +254,39 @@ textarea {
 
 .top-control-bar #help-btn,
 .top-control-bar #board-toggle-btn,
-.control-race .secondary {
+.control-race .secondary,
+.hud-float-tools .secondary {
   background: linear-gradient(145deg, rgba(36, 34, 60, 0.96), rgba(16, 28, 49, 0.95));
   box-shadow:
     0 10px 18px rgba(0, 0, 0, 0.28),
     0 0 0 1px rgba(126, 171, 227, 0.2) inset;
 }
 
-.control-race #hud-toggle-btn {
-  min-width: 88px;
-}
-
-body.hud-collapsed .control-race #hud-toggle-btn {
-  background: linear-gradient(145deg, rgba(45, 68, 118, 0.96), rgba(24, 44, 82, 0.95));
-  box-shadow:
-    0 10px 18px rgba(32, 102, 200, 0.26),
-    0 0 0 1px rgba(156, 208, 255, 0.32) inset;
-}
-
 .control-race {
   display: none;
   align-items: center;
   gap: 8px;
+}
+
+.hud-float-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 9;
+  display: none;
+  pointer-events: none;
+}
+
+.hud-float-tools button {
+  min-width: 94px;
+  pointer-events: auto;
+}
+
+body.hud-collapsed .hud-float-tools #hud-toggle-btn {
+  background: linear-gradient(145deg, rgba(45, 68, 118, 0.96), rgba(24, 44, 82, 0.95));
+  box-shadow:
+    0 10px 18px rgba(32, 102, 200, 0.26),
+    0 0 0 1px rgba(156, 208, 255, 0.32) inset;
 }
 
 .leaderboard-drawer {
@@ -1134,6 +1146,10 @@ body:not(.race-mode) .control-race {
   display: none;
 }
 
+body:not(.race-mode) .hud-float-tools {
+  display: none;
+}
+
 body:not(.race-mode) .touch-controls {
   display: none !important;
 }
@@ -1143,6 +1159,10 @@ body.race-mode .control-full {
 }
 
 body.race-mode .control-race {
+  display: flex;
+}
+
+body.race-mode .hud-float-tools {
   display: flex;
 }
 
@@ -1542,6 +1562,11 @@ body.race-mode #race-canvas {
     max-width: calc(100% - 80px);
   }
 
+  .hud-float-tools {
+    top: 8px;
+    right: 8px;
+  }
+
   .layout {
     grid-template-columns: 1fr;
   }
@@ -1654,6 +1679,11 @@ body.race-mode #race-canvas {
     max-width: none;
   }
 
+  .hud-float-tools {
+    top: max(8px, env(safe-area-inset-top));
+    right: 8px;
+  }
+
   .top-control-bar {
     width: 100%;
   }
@@ -1678,7 +1708,8 @@ body.race-mode #race-canvas {
   }
 
   .control-full button,
-  .control-race button {
+  .control-race button,
+  .hud-float-tools button {
     height: 34px;
     padding: 0 10px;
     font-size: 12px;
