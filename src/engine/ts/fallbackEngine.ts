@@ -2919,6 +2919,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number): void {
     const player = cars[0];
     const renderDistance = 2400;
+    const farMarkerDistance = 8200;
     const mobileView = options.mobile;
     const laneSpreadBase = mobileView ? 246 : 290;
     const laneSpreadDepth = mobileView ? 92 : 120;
@@ -2927,14 +2928,41 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
     for (let i = 1; i < cars.length; i += 1) {
       const ai = cars[i];
-      const rel = normalizeDistance(ai.distance - player.distance);
-      if (rel < 20 || rel > renderDistance) {
+      const rawRel = normalizeDistance(ai.distance - player.distance);
+      if (rawRel < 20) {
+        continue;
+      }
+      const rel = Math.min(rawRel, farMarkerDistance);
+      const laneDelta = ai.lane - player.lane;
+
+      if (rel > renderDistance) {
+        const farDepth = clamp(1 - rel / farMarkerDistance, 0.02, 0.1);
+        const markerY = height * (mobileView ? 0.24 : 0.23) + farDepth * height * 0.26;
+        const markerX = width * 0.5 + laneDelta * (mobileView ? 42 : 56) * (0.66 + farDepth * 2.2);
+        const markerSize = mobileView ? 3.2 : 4;
+        const markerColor = ai.finished ? 'rgba(132, 255, 178, 0.92)' : 'rgba(255, 164, 112, 0.92)';
+        const glowAlpha = ai.finished ? 0.3 : 0.24;
+
+        renderCtx.fillStyle = `rgba(10, 18, 28, ${0.44 + farDepth * 0.18})`;
+        renderCtx.beginPath();
+        renderCtx.ellipse(markerX, markerY + markerSize * 1.6, markerSize * 1.6, markerSize * 0.82, 0, 0, Math.PI * 2);
+        renderCtx.fill();
+
+        renderCtx.fillStyle = markerColor;
+        renderCtx.fillRect(markerX - markerSize * 0.42, markerY - markerSize, markerSize * 0.84, markerSize * 1.5);
+
+        renderCtx.fillStyle = `rgba(255, 236, 168, ${0.6 + farDepth * 0.28})`;
+        renderCtx.fillRect(markerX - markerSize * 0.2, markerY - markerSize * 1.3, markerSize * 0.4, markerSize * 0.36);
+
+        renderCtx.fillStyle = ai.finished ? `rgba(144, 255, 188, ${glowAlpha})` : `rgba(255, 186, 128, ${glowAlpha})`;
+        renderCtx.beginPath();
+        renderCtx.ellipse(markerX, markerY - markerSize * 0.25, markerSize * 2.8, markerSize * 2.3, 0, 0, Math.PI * 2);
+        renderCtx.fill();
         continue;
       }
 
       const depth = 1 - rel / renderDistance;
       const y = height * carYBase + depth * depth * height * carYSpan;
-      const laneDelta = ai.lane - player.lane;
       const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
       const scale = 0.38 + depth * 1.05;
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
