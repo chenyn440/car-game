@@ -2068,6 +2068,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const roadTopHalfRatio = mobileView ? ROAD_TOP_HALF_RATIO + 0.018 : ROAD_TOP_HALF_RATIO;
     const roadNearHalfRatio = mobileView ? ROAD_NEAR_HALF_RATIO + 0.022 : ROAD_NEAR_HALF_RATIO;
     const perspectiveDepthScale = mobileView ? 1.04 : 0.92;
+    const laneCameraFollow = mobileView ? 0.46 : 0.58;
+    const cameraLane = clamp(player.lane * laneCameraFollow + currentInput.steer * (mobileView ? 0.04 : 0.06), -1.3, 1.3);
+    const playerScreenLane = player.lane - cameraLane;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const driftNorm = drifting ? 1 : 0;
@@ -2141,7 +2144,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const xCenter =
         width * 0.5 +
         curveAcc * curveCenterScale -
-        player.lane * perspective * lanePerspectiveScale +
+        cameraLane * perspective * lanePerspectiveScale +
         cameraJitterX * 0.34 +
         cameraLean * 0.52 +
         waveYaw;
@@ -2428,12 +2431,12 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       prevCenter = xCenter;
     }
 
-    renderRoadsidePosts(renderCtx, width, height, player, speedNorm);
-    renderTraps(renderCtx, width, height, player.distance, player.lane);
-    renderTrackObstacles(renderCtx, width, height, player.distance, player.lane);
-    renderNarrowChokeGuides(renderCtx, width, height, player.distance, player.lane);
-    renderDynamicObstacles(renderCtx, width, height, player.distance, player.lane);
-    renderCars(renderCtx, width, height);
+    renderRoadsidePosts(renderCtx, width, height, player, speedNorm, cameraLane);
+    renderTraps(renderCtx, width, height, player.distance, cameraLane);
+    renderTrackObstacles(renderCtx, width, height, player.distance, cameraLane);
+    renderNarrowChokeGuides(renderCtx, width, height, player.distance, cameraLane);
+    renderDynamicObstacles(renderCtx, width, height, player.distance, cameraLane);
+    renderCars(renderCtx, width, height, cameraLane);
     renderSpeedLines(
       renderCtx,
       width,
@@ -2445,8 +2448,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       overtakeFxSide,
       overtakeLossNorm,
       overtakeLossSide,
+      playerScreenLane,
     );
-    renderPlayer(renderCtx, width, height, player, speedNorm);
+    renderPlayer(renderCtx, width, height, player, speedNorm, playerScreenLane);
     renderSpeedVignette(renderCtx, width, height, speedNorm, clamp(player.boostMs / 850, 0, 1));
     renderSceneAtmosphere(renderCtx, width, height, baseDistance, speedNorm);
     renderWeatherEffects(renderCtx, width, height, speedNorm, currentWeather);
@@ -2916,7 +2920,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     }
   }
 
-  function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number): void {
+  function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number, cameraLane: number): void {
     const player = cars[0];
     const renderDistance = 2400;
     const farMarkerDistance = 8200;
@@ -2933,7 +2937,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         continue;
       }
       const rel = Math.min(rawRel, farMarkerDistance);
-      const laneDelta = ai.lane - player.lane;
+      const laneDelta = ai.lane - cameraLane;
 
       if (rel > renderDistance) {
         const farDepth = clamp(1 - rel / farMarkerDistance, 0.02, 0.1);
@@ -3071,14 +3075,21 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     renderCtx.restore();
   }
 
-  function renderPlayer(renderCtx: CanvasRenderingContext2D, width: number, height: number, player: CarState, speedNorm: number): void {
+  function renderPlayer(
+    renderCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    player: CarState,
+    speedNorm: number,
+    playerScreenLane: number,
+  ): void {
     const mobileView = options.mobile;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const airNorm = clamp(playerAirMs / 720, 0, 1);
     const airArc = 1 - Math.abs(airNorm * 2 - 1);
     const jumpLift = airArc * (26 + speedNorm * 18);
-    const x = width * 0.5 + player.lane * (mobileView ? 112 : 132);
+    const x = width * 0.5 + playerScreenLane * (mobileView ? 88 : 132);
     const yBase = mobileView ? 0.8 : 0.82;
     const y = height * (yBase + Math.sin(raceTimeMs * 0.03) * speedNorm * 0.0035 - boostNorm * 0.006) - jumpLift;
     const tilt = currentInput.steer * 0.26 + driftDirection * (drifting ? 0.08 : 0);
@@ -3098,11 +3109,12 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       renderCtx.fillRect(x - 120, y - 92, 240, 170);
     }
 
+    const playerScale = mobileView ? 1.08 : 1.34;
     drawCarSprite(
       renderCtx,
       x,
       y,
-      1.34,
+      playerScale,
       player.shieldMs > 0 ? '#4be7ff' : '#ff5f64',
       '#ffd166',
       tilt,
@@ -3117,6 +3129,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     height: number,
     player: CarState,
     speedNorm: number,
+    cameraLane: number,
   ): void {
     const renderDistance = 2600;
     const start = Math.floor(player.distance / ROADSIDE_POST_SPACING) * ROADSIDE_POST_SPACING;
@@ -3146,7 +3159,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         if (cliffScene && side === (cliffScene.side ?? 1)) {
           continue;
         }
-        const x = baseX + (side * 1.42 - player.lane) * depth * (300 + depth * 220);
+        const x = baseX + (side * 1.42 - cameraLane) * depth * (300 + depth * 220);
         renderCtx.fillStyle = bridgeScene ? '#d6e9f8' : '#e8f2ff';
         renderCtx.fillRect(x - postWidth * 0.5, y - postHeight, postWidth, postHeight);
         renderCtx.fillStyle = bridgeScene ? '#8fd6ff' : '#f3be68';
@@ -3166,6 +3179,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     overtakeSide: -1 | 1,
     overtakeLossNorm: number,
     overtakeLossSide: -1 | 1,
+    playerScreenLane: number,
   ): void {
     const boostNorm = clamp(player.boostMs / 850, 0, 1);
     if (speedNorm < 0.28) {
@@ -3187,7 +3201,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const laneOffset = side * (68 + i * 12);
       const contractedOffset = laneOffset * (1 - contraction);
       const sideBias = side === overtakeSide ? 1 + burstNorm * 0.16 : 1 - burstNorm * 0.08;
-      const x = width * 0.5 + contractedOffset * sideBias + player.lane * 36 + currentInput.steer * 30;
+      const x = width * 0.5 + contractedOffset * sideBias + playerScreenLane * 36 + currentInput.steer * 30;
       const len = 12 + speedNorm * 34 + boostNorm * 22 + burstNorm * 24;
       renderCtx.strokeStyle = `rgba(190, 230, 255, ${0.11 + speedNorm * 0.19 + boostNorm * 0.08 + burstNorm * 0.13})`;
       renderCtx.lineWidth = 1 + speedNorm * 2.5 + burstNorm * 1.5;
