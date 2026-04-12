@@ -550,7 +550,7 @@ async function startRun(playerName: string): Promise<void> {
     activeRunId = crypto.randomUUID();
     engine.startRace(playerName, activeRunId, {
       laps: 3,
-      aiCount: isMobile ? 5 : 8,
+      aiCount: isMobile ? 6 : 8,
       difficultyTier: 'hard_pro',
     });
 
