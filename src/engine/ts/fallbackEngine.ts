@@ -2953,7 +2953,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         const farDepth = clamp(1 - rel / farMarkerDistance, 0.04, 0.22);
         const markerY = height * (mobileView ? 0.2 : 0.19) + farDepth * height * 0.4;
         const markerX = width * 0.5 + laneDelta * (mobileView ? 58 : 72) * (0.72 + farDepth * 2.5);
-        const markerSize = (mobileView ? 5.4 : 6.2) + farDepth * (mobileView ? 3.4 : 3.8);
+        const markerSize = clamp((mobileView ? 5.2 : 5.8) + farDepth * 1.8, mobileView ? 5.4 : 6, mobileView ? 6.4 : 7);
         const markerColor = ai.finished ? '#63f0a8' : '#ff965f';
 
         renderCtx.fillStyle = 'rgba(8, 16, 26, 0.62)';
@@ -2981,7 +2981,10 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const depth = 1 - rel / renderDistance;
       const y = height * carYBase + depth * depth * height * carYSpan;
       const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
-      const scale = (mobileView ? 0.54 : 0.42) + depth * 1.03;
+      const scaleBase = mobileView ? 0.44 : 0.38;
+      const scaleRange = mobileView ? 0.56 : 0.64;
+      const maxScale = mobileView ? 1.0 : 1.08;
+      const scale = clamp(scaleBase + depth * scaleRange, scaleBase, maxScale);
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
       drawCarSprite(
         renderCtx,
