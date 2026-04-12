@@ -9,8 +9,10 @@ const SEGMENT_LENGTH = 140;
 const TRACK_LENGTH = TRACK_SEGMENTS * SEGMENT_LENGTH;
 const MAX_SPEED = 520;
 const CRUISE_SPEED = 132;
-const DESKTOP_CRUISE_FLOOR = 58;
+const DESKTOP_CRUISE_FLOOR = 72;
 const MOBILE_CRUISE_FLOOR = 44;
+const MIN_DESKTOP_DRAW_DISTANCE = 108;
+const MIN_MOBILE_DRAW_DISTANCE = 96;
 const MIN_ROAD_X = -1.28;
 const MAX_ROAD_X = 1.28;
 const DRAW_DISTANCE = 146;
@@ -210,6 +212,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   const hudFlushIntervalMs = options.mobile ? MOBILE_HUD_FLUSH_MS : DESKTOP_HUD_FLUSH_MS;
   const maxStepsPerTick = options.mobile ? MOBILE_MAX_STEPS : MAX_STEPS;
   const recoveryRuntimeCooldown = options.mobile ? 3600 : 2600;
+  const minDrawDistance = options.mobile ? MIN_MOBILE_DRAW_DISTANCE : MIN_DESKTOP_DRAW_DISTANCE;
 
   const segments = buildTrack();
   const trackZones = buildTrackZones();
@@ -275,6 +278,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   let overtakeLossMs = 0;
   let overtakeLossSide: -1 | 1 = 1;
   let runtimeRecoveryCooldownMs = 0;
+  let dynamicDrawDistance = drawDistance;
+  let stableRuntimeMs = 0;
   let rivalSurgeMs = 0;
   let rivalSurgeCooldownMs = 0;
   let rivalSurgeSide: -1 | 1 = 1;
@@ -488,9 +493,21 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
           catchupMs -= stepMs;
         }
         accumulator = 0;
+        stableRuntimeMs = 0;
+        dynamicDrawDistance = Math.max(minDrawDistance, dynamicDrawDistance - (options.mobile ? 4 : 6));
         if (runtimeRecoveryCooldownMs <= 0) {
           pushRuntimeError('帧积压过大，已自动恢复时钟');
           runtimeRecoveryCooldownMs = recoveryRuntimeCooldown;
+        }
+      } else {
+        if (accumulator < FIXED_STEP_MS * 0.7 && steps > 0) {
+          stableRuntimeMs += frameMs;
+          if (stableRuntimeMs >= (options.mobile ? 2200 : 1600) && dynamicDrawDistance < drawDistance) {
+            dynamicDrawDistance = Math.min(drawDistance, dynamicDrawDistance + 2);
+            stableRuntimeMs = 0;
+          }
+        } else {
+          stableRuntimeMs = Math.max(0, stableRuntimeMs - frameMs * 0.45);
         }
       }
 
@@ -502,6 +519,13 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
     } catch (error) {
       pushRuntimeError(error instanceof Error ? error.message : String(error));
+      stableRuntimeMs = 0;
+      dynamicDrawDistance = Math.max(minDrawDistance, dynamicDrawDistance - (options.mobile ? 2 : 3));
+      try {
+        flushHud(true);
+      } catch {
+        // Keep runtime resilient even if HUD flush fails.
+      }
     }
   }
 
@@ -2069,6 +2093,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const baseDistance = player.distance;
     const mobileView = options.mobile;
     const speedNorm = clamp(player.speed / MAX_SPEED, 0, 1.25);
+    const activeDrawDistance = Math.round(clamp(dynamicDrawDistance, minDrawDistance, drawDistance));
+    const detailScale = clamp(activeDrawDistance / drawDistance, 0.72, 1);
     const playerSegment = getSegmentAtDistance(baseDistance);
     const isNearCamera = cameraMode === 'near';
     const curveCenterScale = mobileView ? 124 : 152;
@@ -2094,8 +2120,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const pulse = speedNorm * 0.7 + boostNorm * 0.55;
     const overtakeCompression = overtakeFx * (0.08 + speedNorm * 0.06 + boostNorm * 0.04);
     const lossPull = overtakeLossNorm * (0.05 + speedNorm * 0.05);
-    const cameraJitterXBase = Math.sin(raceTimeMs * (0.042 + speedNorm * 0.014)) * (2.5 + pulse * 4.4);
-    const cameraJitterYBase = Math.cos(raceTimeMs * (0.034 + speedNorm * 0.013)) * (1.7 + pulse * 3.9);
+    const cameraMotionScale = (mobileView ? 1 : 0.74) * (0.84 + detailScale * 0.16);
+    const cameraJitterXBase = Math.sin(raceTimeMs * (0.042 + speedNorm * 0.014)) * (2.5 + pulse * 4.4) * cameraMotionScale;
+    const cameraJitterYBase = Math.cos(raceTimeMs * (0.034 + speedNorm * 0.013)) * (1.7 + pulse * 3.9) * cameraMotionScale;
     const overtakeJitterX = Math.sin(raceTimeMs * (0.11 + overtakeFx * 0.08)) * (1.2 + overtakeFx * 4.4) * overtakeFxSide;
     const overtakeJitterY = Math.cos(raceTimeMs * (0.09 + overtakeFx * 0.07)) * (0.8 + overtakeFx * 2.6);
     const lossJitterX = Math.sin(raceTimeMs * (0.084 + overtakeLossNorm * 0.06)) * (0.9 + overtakeLossNorm * 3.2) * -overtakeLossSide;
@@ -2131,8 +2158,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     let prevCenter = width * 0.5 + cameraJitterX + cameraLean;
     let curveAcc = 0;
 
-    for (let i = drawDistance; i >= 1; i -= 1) {
-      const depth = i / drawDistance;
+    for (let i = activeDrawDistance; i >= 1; i -= 1) {
+      const depth = i / activeDrawDistance;
       const worldDistance = baseDistance + i * SEGMENT_LENGTH;
       const segment = getSegmentAtDistance(worldDistance);
       const segmentIndex = Math.floor(worldDistance / SEGMENT_LENGTH);
@@ -2444,7 +2471,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       prevCenter = xCenter;
     }
 
-    renderRoadsidePosts(renderCtx, width, height, player, speedNorm, cameraLane);
+    renderRoadsidePosts(renderCtx, width, height, player, speedNorm, cameraLane, detailScale);
     renderTraps(renderCtx, width, height, player.distance, cameraLane);
     renderTrackObstacles(renderCtx, width, height, player.distance, cameraLane);
     renderNarrowChokeGuides(renderCtx, width, height, player.distance, cameraLane);
@@ -2462,6 +2489,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       overtakeLossNorm,
       overtakeLossSide,
       playerScreenLane,
+      detailScale,
     );
     renderPlayer(renderCtx, width, height, player, speedNorm, playerScreenLane);
     renderSpeedVignette(renderCtx, width, height, speedNorm, clamp(player.boostMs / 850, 0, 1));
@@ -3156,9 +3184,10 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     player: CarState,
     speedNorm: number,
     cameraLane: number,
+    detailScale: number,
   ): void {
     const renderDistance = 2600;
-    const postSpacing = options.mobile ? ROADSIDE_POST_SPACING : 130;
+    const postSpacing = options.mobile ? ROADSIDE_POST_SPACING : Math.round(130 + (1 - detailScale) * 52);
     const start = Math.floor(player.distance / postSpacing) * postSpacing;
 
     for (let world = start; world < player.distance + renderDistance; world += postSpacing) {
@@ -3168,7 +3197,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
 
       const depth = 1 - rel / renderDistance;
-      if (depth < 0.22 || depth > 0.76) {
+      if (depth < 0.22 + (1 - detailScale) * 0.06 || depth > 0.76) {
         continue;
       }
       const sceneList = getScenesAtDistance(world);
@@ -3207,6 +3236,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     overtakeLossNorm: number,
     overtakeLossSide: -1 | 1,
     playerScreenLane: number,
+    detailScale: number,
   ): void {
     const boostNorm = clamp(player.boostMs / 850, 0, 1);
     if (speedNorm < 0.06) {
@@ -3216,7 +3246,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const burstNorm = clamp(overtakeBurstNorm, 0, 1);
     const lossNorm = clamp(overtakeLossNorm, 0, 1);
     const lineBase = options.mobile ? 16 : 22;
-    const lines = Math.round(lineBase + speedNorm * 20 + boostNorm * 16 + burstNorm * 12);
+    const lines = Math.round((lineBase + speedNorm * 20 + boostNorm * 16 + burstNorm * 12) * detailScale);
     const contraction = burstNorm * (0.34 + boostNorm * 0.26);
     for (let i = 0; i < lines; i += 1) {
       const phase = (player.distance * (1.02 + i * 0.045) + i * 87) % (height * 0.95);
@@ -3229,7 +3259,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const laneOffset = side * (68 + i * 12);
       const contractedOffset = laneOffset * (1 - contraction);
       const sideBias = side === overtakeSide ? 1 + burstNorm * 0.16 : 1 - burstNorm * 0.08;
-      const x = width * 0.5 + contractedOffset * sideBias + playerScreenLane * 36 + currentInput.steer * 30;
+      const steerOffset = options.mobile ? currentInput.steer * 30 : currentInput.steer * 12;
+      const x = width * 0.5 + contractedOffset * sideBias + playerScreenLane * 36 + steerOffset;
       const len = 12 + speedNorm * 34 + boostNorm * 22 + burstNorm * 24;
       const alphaBoost = options.mobile ? 1 : 1.28;
       renderCtx.strokeStyle = `rgba(190, 230, 255, ${(0.11 + speedNorm * 0.19 + boostNorm * 0.08 + burstNorm * 0.13) * alphaBoost})`;
