@@ -97,7 +97,7 @@ npm run build:wasm
 ### 1) 首次部署（PM2 + Nginx）
 
 ```bash
-sudo bash scripts/setup-meeting-signal-pm2-tencent.sh \
+sudo bash scripts/setup-car-game-pm2-tencent.sh \
   --domain your.domain.com \
   --project-dir /home/car-game \
   --run-user root \
@@ -117,4 +117,4 @@ bash scripts/deploy-remote-build.sh
 - 远程 `git pull`
 - `npm install`（按需）
 - `npm run build`
-- 重启 `leaderboard-api` 进程
+- 重启 `car-game` 进程
