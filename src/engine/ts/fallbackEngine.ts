@@ -2922,13 +2922,13 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
   function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number, cameraLane: number): void {
     const player = cars[0];
-    const renderDistance = 2400;
-    const farMarkerDistance = 8200;
     const mobileView = options.mobile;
+    const renderDistance = mobileView ? 3400 : 2800;
+    const farMarkerDistance = mobileView ? 12_800 : 9_800;
     const laneSpreadBase = mobileView ? 246 : 290;
     const laneSpreadDepth = mobileView ? 92 : 120;
-    const carYBase = mobileView ? 0.23 : 0.26;
-    const carYSpan = mobileView ? 0.72 : 0.68;
+    const carYBase = mobileView ? 0.22 : 0.26;
+    const carYSpan = mobileView ? 0.74 : 0.68;
 
     for (let i = 1; i < cars.length; i += 1) {
       const ai = cars[i];
@@ -2940,27 +2940,33 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const laneDelta = ai.lane - cameraLane;
 
       if (rel > renderDistance) {
-        const farDepth = clamp(1 - rel / farMarkerDistance, 0.02, 0.1);
-        const markerY = height * (mobileView ? 0.24 : 0.23) + farDepth * height * 0.26;
-        const markerX = width * 0.5 + laneDelta * (mobileView ? 42 : 56) * (0.66 + farDepth * 2.2);
-        const markerSize = mobileView ? 3.2 : 4;
-        const markerColor = ai.finished ? 'rgba(132, 255, 178, 0.92)' : 'rgba(255, 164, 112, 0.92)';
-        const glowAlpha = ai.finished ? 0.3 : 0.24;
+        const farDepth = clamp(1 - rel / farMarkerDistance, 0.04, 0.22);
+        const markerY = height * (mobileView ? 0.2 : 0.19) + farDepth * height * 0.4;
+        const markerX = width * 0.5 + laneDelta * (mobileView ? 58 : 72) * (0.72 + farDepth * 2.5);
+        const markerSize = mobileView ? 5.2 : 5.8;
+        const markerColor = ai.finished ? 'rgba(120, 255, 180, 0.98)' : 'rgba(255, 156, 96, 0.98)';
+        const glowAlpha = ai.finished ? 0.42 : 0.34;
 
         renderCtx.fillStyle = `rgba(10, 18, 28, ${0.44 + farDepth * 0.18})`;
         renderCtx.beginPath();
-        renderCtx.ellipse(markerX, markerY + markerSize * 1.6, markerSize * 1.6, markerSize * 0.82, 0, 0, Math.PI * 2);
+        renderCtx.ellipse(markerX, markerY + markerSize * 1.7, markerSize * 1.75, markerSize * 0.86, 0, 0, Math.PI * 2);
         renderCtx.fill();
 
+        renderCtx.strokeStyle = 'rgba(255, 248, 230, 0.88)';
+        renderCtx.lineWidth = Math.max(1, markerSize * 0.22);
+        renderCtx.beginPath();
+        renderCtx.arc(markerX, markerY - markerSize * 0.18, markerSize * 0.86, 0, Math.PI * 2);
+        renderCtx.stroke();
+
         renderCtx.fillStyle = markerColor;
-        renderCtx.fillRect(markerX - markerSize * 0.42, markerY - markerSize, markerSize * 0.84, markerSize * 1.5);
+        renderCtx.fillRect(markerX - markerSize * 0.46, markerY - markerSize * 0.92, markerSize * 0.92, markerSize * 1.72);
 
         renderCtx.fillStyle = `rgba(255, 236, 168, ${0.6 + farDepth * 0.28})`;
-        renderCtx.fillRect(markerX - markerSize * 0.2, markerY - markerSize * 1.3, markerSize * 0.4, markerSize * 0.36);
+        renderCtx.fillRect(markerX - markerSize * 0.24, markerY - markerSize * 1.34, markerSize * 0.48, markerSize * 0.4);
 
         renderCtx.fillStyle = ai.finished ? `rgba(144, 255, 188, ${glowAlpha})` : `rgba(255, 186, 128, ${glowAlpha})`;
         renderCtx.beginPath();
-        renderCtx.ellipse(markerX, markerY - markerSize * 0.25, markerSize * 2.8, markerSize * 2.3, 0, 0, Math.PI * 2);
+        renderCtx.ellipse(markerX, markerY - markerSize * 0.24, markerSize * 3.1, markerSize * 2.45, 0, 0, Math.PI * 2);
         renderCtx.fill();
         continue;
       }
@@ -2968,7 +2974,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const depth = 1 - rel / renderDistance;
       const y = height * carYBase + depth * depth * height * carYSpan;
       const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
-      const scale = 0.38 + depth * 1.05;
+      const scale = (mobileView ? 0.54 : 0.42) + depth * 1.03;
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
       drawCarSprite(
         renderCtx,
@@ -3290,8 +3296,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       return;
     }
 
+    const rainAlphaScale = options.mobile ? 0.72 : 1;
     const drops = Math.round(42 + speedNorm * 40);
-    renderCtx.strokeStyle = `rgba(184, 224, 246, ${0.16 + speedNorm * 0.12})`;
+    renderCtx.strokeStyle = `rgba(184, 224, 246, ${(0.16 + speedNorm * 0.12) * rainAlphaScale})`;
     renderCtx.lineWidth = 1 + speedNorm * 1.4;
     for (let i = 0; i < drops; i += 1) {
       const seed = i * 37;
@@ -3304,7 +3311,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       renderCtx.stroke();
     }
 
-    renderCtx.fillStyle = 'rgba(40, 64, 86, 0.09)';
+    renderCtx.fillStyle = `rgba(40, 64, 86, ${0.09 * rainAlphaScale})`;
     renderCtx.fillRect(0, 0, width, height);
 
     if (empJammedMs > 0) {
