@@ -478,8 +478,13 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
 
       if (steps === maxStepsPerTick && accumulator >= FIXED_STEP_MS * 2) {
-        const catchupMs = Math.min(accumulator, options.mobile ? 280 : 180);
-        simulate(catchupMs);
+        let catchupMs = Math.min(accumulator, options.mobile ? 280 : 180);
+        const catchupStepMs = FIXED_STEP_MS * 2;
+        while (catchupMs > 0) {
+          const stepMs = Math.min(catchupStepMs, catchupMs);
+          simulate(stepMs);
+          catchupMs -= stepMs;
+        }
         accumulator = 0;
         if (runtimeRecoveryCooldownMs <= 0) {
           pushRuntimeError('帧积压过大，已自动恢复时钟');
@@ -643,7 +648,10 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     player.lane = clamp(step.lane, -1.6, 1.6);
     if (currentWeather === 'rain') {
       player.speed = clamp(player.speed * 0.996, 0, MAX_SPEED * 1.2);
-      player.lane += Math.sign(currentInput.steer || 1) * curveAtPlayer * 0.0024;
+      const steerSign = Math.sign(currentInput.steer);
+      if (steerSign !== 0) {
+        player.lane += steerSign * curveAtPlayer * 0.0024;
+      }
     } else if (currentWeather === 'fog') {
       player.speed = clamp(player.speed * 0.998, 0, MAX_SPEED * 1.2);
     }
@@ -659,9 +667,20 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       player.lane += gust * gustDir * 0.00075 * dtMs;
     }
 
+    const stabilityAssistActive = Math.abs(currentInput.steer) < 0.08 && !drifting && player.stunMs <= 0;
+    const stabilityAimLane = clamp(preferredLaneForDistance(player.distance + 120) * 0.36, -0.48, 0.48);
+    if (stabilityAssistActive) {
+      const speedNorm = clamp(player.speed / MAX_SPEED, 0, 1);
+      const blend = clamp(0.045 + speedNorm * 0.11 + dtMs * 0.0002, 0.045, 0.22);
+      player.lane = lerp(player.lane, stabilityAimLane, blend);
+    }
+
     const roadOverflow = Math.max(0, Math.abs(player.lane) - MAX_ROAD_X);
     if (roadOverflow > 0) {
       offroadMs = Math.min(2200, offroadMs + dtMs * (1 + roadOverflow * 2.2));
+      if (stabilityAssistActive) {
+        player.lane = lerp(player.lane, clamp(stabilityAimLane, -0.34, 0.34), clamp(0.09 + dtMs * 0.00035, 0.09, 0.28));
+      }
       const offroadDrag = clamp(0.985 - roadOverflow * 0.035, 0.89, 0.985);
       player.speed *= offroadDrag;
       player.boostMs = Math.max(0, player.boostMs - dtMs * (0.48 + roadOverflow * 0.72));
@@ -1427,7 +1446,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
           } else if (risky) {
             shortcutVisitedKeys.add(entryKey);
             player.speed *= currentWeather === 'rain' ? 0.82 : 0.88;
-            player.lane += Math.sign(currentInput.steer || 1) * 0.08;
+            player.lane += Math.sign(currentInput.steer) * 0.08;
             breakCombo('近道失误');
             pushMessage('近道打滑');
           }
