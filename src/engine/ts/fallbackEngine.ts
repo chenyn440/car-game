@@ -2068,8 +2068,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const roadTopHalfRatio = mobileView ? ROAD_TOP_HALF_RATIO + 0.018 : ROAD_TOP_HALF_RATIO;
     const roadNearHalfRatio = mobileView ? ROAD_NEAR_HALF_RATIO + 0.022 : ROAD_NEAR_HALF_RATIO;
     const perspectiveDepthScale = mobileView ? 1.04 : 0.92;
-    const laneCameraFollow = mobileView ? 0.46 : 0.58;
-    const cameraLane = clamp(player.lane * laneCameraFollow + currentInput.steer * (mobileView ? 0.04 : 0.06), -1.3, 1.3);
+    const laneCameraFollow = mobileView ? 0.0 : 0.05;
+    const cameraLane = clamp(player.lane * laneCameraFollow, -0.28, 0.28);
     const playerScreenLane = player.lane - cameraLane;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
@@ -2097,7 +2097,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const cameraJitterX = cameraJitterXBase + overtakeJitterX + lossJitterX + rivalSurgeJitterX;
     const cameraJitterY = cameraJitterYBase + overtakeJitterY + lossJitterY + rivalSurgeJitterY;
     const cameraLean =
-      currentInput.steer * (isNearCamera ? 14 + speedNorm * 30 : 8 + speedNorm * 17) +
+      currentInput.steer * (isNearCamera ? 1.2 + speedNorm * 2.4 : 0.8 + speedNorm * 1.6) +
       driftDirection * driftNorm * (6 + speedNorm * 9) +
       overtakeFxSide * overtakeFx * (isNearCamera ? 2.6 : 1.4) +
       -overtakeLossSide * overtakeLossNorm * (isNearCamera ? 3.2 : 1.8) +
