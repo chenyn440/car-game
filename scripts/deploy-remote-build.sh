@@ -16,7 +16,7 @@ PM2_APP_NAME="${PM2_APP_NAME:-car-game}"
 API_ENTRY_REL="${API_ENTRY_REL:-server/leaderboard-server.mjs}"
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8787}"
-RESTART_CMD="${RESTART_CMD:-source /root/.nvm/nvm.sh >/dev/null 2>&1 || true; nvm use --silent 22 >/dev/null 2>&1 || true; if command -v pm2 >/dev/null 2>&1; then pm2 restart ${PM2_APP_NAME} --update-env || LEADERBOARD_HOST=${API_HOST} LEADERBOARD_PORT=${API_PORT} pm2 start ${REMOTE_PROJECT_DIR}/${API_ENTRY_REL} --name ${PM2_APP_NAME}; elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^${PM2_APP_NAME}\\.service'; then systemctl restart ${PM2_APP_NAME}; else echo 'No pm2 or systemd service found for restart.'; fi}"            # optional
+RESTART_CMD="${RESTART_CMD:-source /root/.nvm/nvm.sh >/dev/null 2>&1 || true; nvm use --silent 22 >/dev/null 2>&1 || true; if command -v pm2 >/dev/null 2>&1; then pm2 delete ${PM2_APP_NAME} >/dev/null 2>&1 || true; LEADERBOARD_HOST=${API_HOST} LEADERBOARD_PORT=${API_PORT} pm2 start ${REMOTE_PROJECT_DIR}/${API_ENTRY_REL} --name ${PM2_APP_NAME}; elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^${PM2_APP_NAME}\\.service'; then systemctl restart ${PM2_APP_NAME}; else echo 'No pm2 or systemd service found for restart.'; fi}"            # optional
 
 if [[ -z "${SSH_USER_HOST}" || -z "${REMOTE_PROJECT_DIR}" ]]; then
   echo "Please set SSH_USER_HOST (and optionally REMOTE_PROJECT_DIR) via env."
