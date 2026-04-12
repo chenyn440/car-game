@@ -91,3 +91,30 @@ npm run build:wasm
 
 当前页面默认使用 TS fallback 引擎（`src/engine/ts/fallbackEngine.ts`），
 等本地可用 `wasm-bindgen-cli/wasm-pack` 后，可接入 `src/engine/wasm/bridge` 切换到 Rust 运行时。
+
+## 远程部署（腾讯云）
+
+### 1) 首次部署（PM2 + Nginx）
+
+```bash
+sudo bash scripts/setup-meeting-signal-pm2-tencent.sh \
+  --domain your.domain.com \
+  --project-dir /home/car-game \
+  --run-user root \
+  --signal-port 8787
+```
+
+### 2) 日常更新代码并重启服务
+
+先在本机修改 `scripts/deploy-remote-build.sh` 顶部参数，然后执行：
+
+```bash
+bash scripts/deploy-remote-build.sh
+```
+
+该脚本会自动执行：
+
+- 远程 `git pull`
+- `npm install`（按需）
+- `npm run build`
+- 重启 `leaderboard-api` 进程

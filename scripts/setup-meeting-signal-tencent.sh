@@ -3,13 +3,13 @@ set -euo pipefail
 
 # 腾讯云 Ubuntu/CentOS 兼容的一键部署脚本：
 # 1) 安装/校验 Nginx
-# 2) 安装 meeting-signal systemd 服务
+# 2) 安装 leaderboard-api systemd 服务
 # 3) 写入并启用 Nginx 反代配置
 #
 # 用法：
 # sudo bash scripts/setup-meeting-signal-tencent.sh \
 #   --domain meet.example.com \
-#   --project-dir /opt/memo-app \
+#   --project-dir /opt/car-game \
 #   --run-user ubuntu \
 #   --signal-port 8787
 
@@ -17,7 +17,8 @@ DOMAIN=""
 PROJECT_DIR=""
 RUN_USER=""
 SIGNAL_PORT="8787"
-SITE_NAME="meeting-signal"
+SITE_NAME="leaderboard-api"
+SERVICE_NAME="leaderboard-api"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       SITE_NAME="${2:-}"
       shift 2
       ;;
+    --service-name)
+      SERVICE_NAME="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown arg: $1" >&2
       exit 1
@@ -59,7 +64,7 @@ if [[ -z "$DOMAIN" || -z "$PROJECT_DIR" ]]; then
 示例：
 sudo bash scripts/setup-meeting-signal-tencent.sh \
   --domain meet.example.com \
-  --project-dir /opt/memo-app \
+  --project-dir /opt/car-game \
   --run-user ubuntu \
   --signal-port 8787
 USAGE
@@ -93,9 +98,18 @@ fi
 
 echo "[2/6] 安装 Node 依赖..."
 cd "$PROJECT_DIR"
-npm install --omit=dev
+npm install
 
-SERVICE_FILE="/etc/systemd/system/meeting-signal.service"
+if [[ ! -f "$PROJECT_DIR/scripts/meeting-signal.service.template" ]]; then
+  echo "缺少模板文件: $PROJECT_DIR/scripts/meeting-signal.service.template" >&2
+  exit 1
+fi
+if [[ ! -f "$PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" ]]; then
+  echo "缺少模板文件: $PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" >&2
+  exit 1
+fi
+
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "[3/6] 写入 systemd 服务: $SERVICE_FILE"
 sed \
   -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
@@ -103,15 +117,16 @@ sed \
   -e "s|__RUN_USER__|$RUN_USER|g" \
   "$PROJECT_DIR/scripts/meeting-signal.service.template" > "$SERVICE_FILE"
 
-echo "[4/6] 启动 meeting-signal 服务..."
+echo "[4/6] 启动 ${SERVICE_NAME} 服务..."
 systemctl daemon-reload
-systemctl enable --now meeting-signal
+systemctl enable --now "$SERVICE_NAME"
 
 NGINX_CONF="/etc/nginx/conf.d/${SITE_NAME}.conf"
 echo "[5/6] 写入 Nginx 配置: $NGINX_CONF"
 sed \
   -e "s|__SERVER_NAME__|$DOMAIN|g" \
   -e "s|__UPSTREAM_PORT__|$SIGNAL_PORT|g" \
+  -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
   "$PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" > "$NGINX_CONF"
 
 if [[ -f /etc/nginx/sites-enabled/default ]]; then
@@ -130,7 +145,7 @@ fi
 echo ""
 echo "部署完成。"
 echo "服务状态："
-echo "  systemctl status meeting-signal --no-pager"
+echo "  systemctl status ${SERVICE_NAME} --no-pager"
 echo "  systemctl status nginx --no-pager"
 echo ""
 echo "健康检查："

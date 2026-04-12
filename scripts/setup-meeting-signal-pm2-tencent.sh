@@ -10,7 +10,7 @@ set -euo pipefail
 # 用法：
 # sudo bash scripts/setup-meeting-signal-pm2-tencent.sh \
 #   --domain meet.example.com \
-#   --project-dir /opt/memo-app \
+#   --project-dir /opt/car-game \
 #   --run-user root \
 #   --signal-port 8787
 
@@ -18,8 +18,8 @@ DOMAIN=""
 PROJECT_DIR=""
 RUN_USER=""
 SIGNAL_PORT="8787"
-SITE_NAME="meeting-signal"
-APP_NAME="meeting-signal"
+SITE_NAME="leaderboard-api"
+APP_NAME="leaderboard-api"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,7 +65,7 @@ if [[ -z "$DOMAIN" || -z "$PROJECT_DIR" ]]; then
 示例：
 sudo bash scripts/setup-meeting-signal-pm2-tencent.sh \
   --domain meet.example.com \
-  --project-dir /opt/memo-app \
+  --project-dir /opt/car-game \
   --run-user root \
   --signal-port 8787
 USAGE
@@ -109,7 +109,16 @@ fi
 
 echo "[2/7] 安装 Node 依赖..."
 cd "$PROJECT_DIR"
-"$NPM_BIN" install --omit=dev
+"$NPM_BIN" install
+
+if [[ ! -f "$PROJECT_DIR/scripts/meeting-signal.pm2.config.template.cjs" ]]; then
+  echo "缺少模板文件: $PROJECT_DIR/scripts/meeting-signal.pm2.config.template.cjs" >&2
+  exit 1
+fi
+if [[ ! -f "$PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" ]]; then
+  echo "缺少模板文件: $PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" >&2
+  exit 1
+fi
 
 echo "[3/7] 安装 PM2..."
 "$NPM_BIN" install -g pm2
@@ -132,6 +141,7 @@ echo "[6/7] 写入 Nginx 配置: $NGINX_CONF"
 sed \
   -e "s|__SERVER_NAME__|$DOMAIN|g" \
   -e "s|__UPSTREAM_PORT__|$SIGNAL_PORT|g" \
+  -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
   "$PROJECT_DIR/scripts/nginx-meeting-signal.conf.template" > "$NGINX_CONF"
 
 if [[ -f /etc/nginx/sites-enabled/default ]]; then

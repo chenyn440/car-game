@@ -1,0 +1,19 @@
+[Unit]
+Description=Car Game Leaderboard API
+After=network.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=NODE_ENV=production
+Environment=LEADERBOARD_HOST=127.0.0.1
+Environment=LEADERBOARD_PORT=__SIGNAL_PORT__
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env node __PROJECT_DIR__/server/leaderboard-server.mjs
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
