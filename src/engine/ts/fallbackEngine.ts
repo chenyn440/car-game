@@ -2925,49 +2925,56 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const mobileView = options.mobile;
     const renderDistance = mobileView ? 3400 : 2800;
     const farMarkerDistance = mobileView ? 12_800 : 9_800;
+    const farRenderLimit = mobileView ? 5 : 6;
     const laneSpreadBase = mobileView ? 246 : 290;
     const laneSpreadDepth = mobileView ? 92 : 120;
     const carYBase = mobileView ? 0.22 : 0.26;
     const carYSpan = mobileView ? 0.74 : 0.68;
+    const visibleAi = cars
+      .slice(1)
+      .map((ai) => {
+        const rawRel = normalizeDistance(ai.distance - player.distance);
+        return { ai, rawRel, laneDelta: ai.lane - cameraLane };
+      })
+      .filter((entry) => entry.rawRel >= 20)
+      .sort((a, b) => a.rawRel - b.rawRel);
+    let farRendered = 0;
 
-    for (let i = 1; i < cars.length; i += 1) {
-      const ai = cars[i];
-      const rawRel = normalizeDistance(ai.distance - player.distance);
-      if (rawRel < 20) {
-        continue;
-      }
+    for (const entry of visibleAi) {
+      const { ai, rawRel, laneDelta } = entry;
       const rel = Math.min(rawRel, farMarkerDistance);
-      const laneDelta = ai.lane - cameraLane;
 
       if (rel > renderDistance) {
+        if (farRendered >= farRenderLimit) {
+          continue;
+        }
+        farRendered += 1;
+
         const farDepth = clamp(1 - rel / farMarkerDistance, 0.04, 0.22);
         const markerY = height * (mobileView ? 0.2 : 0.19) + farDepth * height * 0.4;
         const markerX = width * 0.5 + laneDelta * (mobileView ? 58 : 72) * (0.72 + farDepth * 2.5);
-        const markerSize = mobileView ? 5.2 : 5.8;
-        const markerColor = ai.finished ? 'rgba(120, 255, 180, 0.98)' : 'rgba(255, 156, 96, 0.98)';
-        const glowAlpha = ai.finished ? 0.42 : 0.34;
+        const markerSize = (mobileView ? 5.4 : 6.2) + farDepth * (mobileView ? 3.4 : 3.8);
+        const markerColor = ai.finished ? '#63f0a8' : '#ff965f';
 
-        renderCtx.fillStyle = `rgba(10, 18, 28, ${0.44 + farDepth * 0.18})`;
+        renderCtx.fillStyle = 'rgba(8, 16, 26, 0.62)';
         renderCtx.beginPath();
-        renderCtx.ellipse(markerX, markerY + markerSize * 1.7, markerSize * 1.75, markerSize * 0.86, 0, 0, Math.PI * 2);
+        renderCtx.ellipse(markerX, markerY + markerSize * 1.22, markerSize * 0.88, markerSize * 0.42, 0, 0, Math.PI * 2);
         renderCtx.fill();
-
-        renderCtx.strokeStyle = 'rgba(255, 248, 230, 0.88)';
-        renderCtx.lineWidth = Math.max(1, markerSize * 0.22);
-        renderCtx.beginPath();
-        renderCtx.arc(markerX, markerY - markerSize * 0.18, markerSize * 0.86, 0, Math.PI * 2);
-        renderCtx.stroke();
 
         renderCtx.fillStyle = markerColor;
-        renderCtx.fillRect(markerX - markerSize * 0.46, markerY - markerSize * 0.92, markerSize * 0.92, markerSize * 1.72);
-
-        renderCtx.fillStyle = `rgba(255, 236, 168, ${0.6 + farDepth * 0.28})`;
-        renderCtx.fillRect(markerX - markerSize * 0.24, markerY - markerSize * 1.34, markerSize * 0.48, markerSize * 0.4);
-
-        renderCtx.fillStyle = ai.finished ? `rgba(144, 255, 188, ${glowAlpha})` : `rgba(255, 186, 128, ${glowAlpha})`;
         renderCtx.beginPath();
-        renderCtx.ellipse(markerX, markerY - markerSize * 0.24, markerSize * 3.1, markerSize * 2.45, 0, 0, Math.PI * 2);
+        renderCtx.moveTo(markerX, markerY - markerSize * 1.04);
+        renderCtx.lineTo(markerX + markerSize * 0.66, markerY + markerSize * 0.44);
+        renderCtx.lineTo(markerX - markerSize * 0.66, markerY + markerSize * 0.44);
+        renderCtx.closePath();
         renderCtx.fill();
+
+        renderCtx.strokeStyle = 'rgba(255, 245, 218, 0.94)';
+        renderCtx.lineWidth = Math.max(1, markerSize * 0.16);
+        renderCtx.stroke();
+
+        renderCtx.fillStyle = ai.finished ? 'rgba(188, 255, 216, 0.95)' : 'rgba(255, 236, 174, 0.95)';
+        renderCtx.fillRect(markerX - markerSize * 0.14, markerY - markerSize * 0.6, markerSize * 0.28, markerSize * 0.32);
         continue;
       }
 
