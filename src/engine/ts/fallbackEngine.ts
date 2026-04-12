@@ -9,6 +9,8 @@ const SEGMENT_LENGTH = 140;
 const TRACK_LENGTH = TRACK_SEGMENTS * SEGMENT_LENGTH;
 const MAX_SPEED = 520;
 const CRUISE_SPEED = 132;
+const DESKTOP_CRUISE_FLOOR = 58;
+const MOBILE_CRUISE_FLOOR = 44;
 const MIN_ROAD_X = -1.28;
 const MAX_ROAD_X = 1.28;
 const DRAW_DISTANCE = 146;
@@ -706,6 +708,12 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       } else {
         player.speed *= 0.9992;
       }
+    }
+
+    // Keep a minimal rolling speed to avoid the "stuck" feeling when not braking.
+    if (!currentInput.brake && player.stunMs <= 0) {
+      const cruiseFloor = options.mobile ? MOBILE_CRUISE_FLOOR : DESKTOP_CRUISE_FLOOR;
+      player.speed = Math.max(player.speed, cruiseFloor);
     }
 
     const activeZones = getZonesForCar(player.distance, player.lane);
@@ -2376,9 +2384,15 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         renderCtx.lineTo(prevCenter + prevHalfWidth, prevY);
         renderCtx.stroke();
 
-        const laneDashEnabled = segmentIndex % 2 === 0;
+        const laneDashEnabled = mobileView ? segmentIndex % 2 === 0 : true;
         if (laneDashEnabled && perspective > 0.08) {
-          const laneColor = tunnelScene ? 'rgba(232, 238, 246, 0.86)' : 'rgba(255, 237, 184, 0.8)';
+          const laneColor = tunnelScene
+            ? mobileView
+              ? 'rgba(232, 238, 246, 0.86)'
+              : 'rgba(246, 250, 255, 0.94)'
+            : mobileView
+              ? 'rgba(255, 237, 184, 0.8)'
+              : 'rgba(255, 242, 196, 0.9)';
           const centerTopHalf = Math.max(1, halfWidth * 0.018);
           const centerBottomHalf = Math.max(1, prevHalfWidth * 0.018);
           renderCtx.fillStyle = laneColor;
@@ -2396,7 +2410,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
             const bottomX = prevCenter + laneToRoadOffset(laneOffset, prevHalfWidth);
             const dashWTop = Math.max(0.8, halfWidth * 0.012);
             const dashWBottom = Math.max(0.8, prevHalfWidth * 0.012);
-            renderCtx.fillStyle = 'rgba(232, 240, 250, 0.62)';
+            renderCtx.fillStyle = mobileView ? 'rgba(232, 240, 250, 0.62)' : 'rgba(236, 246, 255, 0.78)';
             renderCtx.beginPath();
             renderCtx.moveTo(topX - dashWTop, y);
             renderCtx.lineTo(topX + dashWTop, y);
@@ -3144,9 +3158,10 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     cameraLane: number,
   ): void {
     const renderDistance = 2600;
-    const start = Math.floor(player.distance / ROADSIDE_POST_SPACING) * ROADSIDE_POST_SPACING;
+    const postSpacing = options.mobile ? ROADSIDE_POST_SPACING : 130;
+    const start = Math.floor(player.distance / postSpacing) * postSpacing;
 
-    for (let world = start; world < player.distance + renderDistance; world += ROADSIDE_POST_SPACING) {
+    for (let world = start; world < player.distance + renderDistance; world += postSpacing) {
       const rel = world - player.distance;
       if (rel <= 25) {
         continue;
@@ -3200,7 +3215,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
     const burstNorm = clamp(overtakeBurstNorm, 0, 1);
     const lossNorm = clamp(overtakeLossNorm, 0, 1);
-    const lines = Math.round(16 + speedNorm * 18 + boostNorm * 14 + burstNorm * 12);
+    const lineBase = options.mobile ? 16 : 22;
+    const lines = Math.round(lineBase + speedNorm * 20 + boostNorm * 16 + burstNorm * 12);
     const contraction = burstNorm * (0.34 + boostNorm * 0.26);
     for (let i = 0; i < lines; i += 1) {
       const phase = (player.distance * (1.02 + i * 0.045) + i * 87) % (height * 0.95);
@@ -3215,8 +3231,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const sideBias = side === overtakeSide ? 1 + burstNorm * 0.16 : 1 - burstNorm * 0.08;
       const x = width * 0.5 + contractedOffset * sideBias + playerScreenLane * 36 + currentInput.steer * 30;
       const len = 12 + speedNorm * 34 + boostNorm * 22 + burstNorm * 24;
-      renderCtx.strokeStyle = `rgba(190, 230, 255, ${0.11 + speedNorm * 0.19 + boostNorm * 0.08 + burstNorm * 0.13})`;
-      renderCtx.lineWidth = 1 + speedNorm * 2.5 + burstNorm * 1.5;
+      const alphaBoost = options.mobile ? 1 : 1.28;
+      renderCtx.strokeStyle = `rgba(190, 230, 255, ${(0.11 + speedNorm * 0.19 + boostNorm * 0.08 + burstNorm * 0.13) * alphaBoost})`;
+      renderCtx.lineWidth = (options.mobile ? 1 : 1.15) + speedNorm * 2.5 + burstNorm * 1.5;
       renderCtx.beginPath();
       renderCtx.moveTo(x, y);
       renderCtx.lineTo(x + side * (8 + boostNorm * 5), y + len);
