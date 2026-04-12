@@ -261,6 +261,38 @@ const isMobile = window.matchMedia('(max-width: 980px), (pointer: coarse)').matc
 touchControls.style.display = 'none';
 const HUD_COLLAPSE_KEY = 'turbo-drift-hud-collapsed';
 
+if (isMobile) {
+  // Prevent double-tap select/zoom gestures inside the game shell.
+  let lastTouchEndAt = 0;
+  document.addEventListener(
+    'touchend',
+    (event) => {
+      const now = Date.now();
+      if (now - lastTouchEndAt < 320) {
+        event.preventDefault();
+      }
+      lastTouchEndAt = now;
+    },
+    { passive: false },
+  );
+
+  document.addEventListener(
+    'dblclick',
+    (event) => {
+      event.preventDefault();
+    },
+    { passive: false },
+  );
+
+  const blockGesture = (event: Event) => {
+    event.preventDefault();
+  };
+
+  document.addEventListener('gesturestart', blockGesture as EventListener, { passive: false });
+  document.addEventListener('gesturechange', blockGesture as EventListener, { passive: false });
+  document.addEventListener('gestureend', blockGesture as EventListener, { passive: false });
+}
+
 let engine: RacingEngine | null = null;
 let rafId: number | null = null;
 let loadingRun = false;
@@ -497,6 +529,27 @@ function setLeaderboardDrawer(open: boolean): void {
   boardToggleBtn.textContent = shouldOpen ? '收起榜单' : '排行榜';
 }
 
+function configureRaceCanvasSize(): void {
+  const rect = raceCanvas.getBoundingClientRect();
+  const fallbackWidth = Math.max(320, window.innerWidth);
+  const fallbackHeight = Math.max(480, window.innerHeight);
+  const cssWidth = Math.max(320, Math.floor(rect.width || fallbackWidth));
+  const cssHeight = Math.max(180, Math.floor(rect.height || fallbackHeight));
+
+  if (isMobile) {
+    const aspect = Math.min(2.2, Math.max(1.45, cssHeight / cssWidth));
+    const renderWidth = Math.round(Math.min(560, Math.max(420, cssWidth * 1.22)));
+    const renderHeight = Math.round(Math.min(1180, Math.max(720, renderWidth * aspect)));
+    raceCanvas.width = renderWidth;
+    raceCanvas.height = renderHeight;
+    return;
+  }
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  raceCanvas.width = Math.max(960, Math.round(cssWidth * dpr));
+  raceCanvas.height = Math.max(540, Math.round(cssHeight * dpr));
+}
+
 function renderBoardPreview(rows: Array<{ playerName: string; score: number; durationSec: number }>): void {
   if (rows.length === 0) {
     boardPreview.innerHTML = '<li class="empty">暂无记录，先跑一局吧</li>';
@@ -523,13 +576,8 @@ async function startRun(playerName: string): Promise<void> {
 
   try {
     stopRun();
-
-    raceCanvas.width = 1280;
-    raceCanvas.height = 720;
-    if (isMobile) {
-      raceCanvas.width = 900;
-      raceCanvas.height = 506;
-    }
+    setRaceMode(true);
+    configureRaceCanvasSize();
 
     engine = await createRacingEngine({
       canvas: raceCanvas,
@@ -537,8 +585,6 @@ async function startRun(playerName: string): Promise<void> {
       height: raceCanvas.height,
       mobile: isMobile,
     });
-
-    setRaceMode(true);
     hideOverlay(resultOverlay);
     if (!coachDismissed && !coachShownOnce) {
       coachText.textContent = '倒计时结束后全程按油门，先稳住赛道中线。';

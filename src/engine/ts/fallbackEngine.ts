@@ -15,7 +15,7 @@ const DRAW_DISTANCE = 146;
 const MOBILE_DRAW_DISTANCE = 118;
 const DESKTOP_HUD_FLUSH_MS = 90;
 const MOBILE_HUD_FLUSH_MS = 120;
-const MOBILE_MAX_STEPS = 4;
+const MOBILE_MAX_STEPS = 8;
 const ITEM_INTERVAL_DISTANCE = 1450;
 const ROADSIDE_POST_SPACING = 170;
 const ROAD_TOP_HALF_RATIO = 0.104;
@@ -475,6 +475,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
 
       if (steps === maxStepsPerTick && accumulator >= FIXED_STEP_MS * 2) {
+        const catchupMs = Math.min(accumulator, options.mobile ? 280 : 180);
+        simulate(catchupMs);
         accumulator = 0;
         if (runtimeRecoveryCooldownMs <= 0) {
           pushRuntimeError('帧积压过大，已自动恢复时钟');
@@ -2002,9 +2004,15 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   function render(renderCtx: CanvasRenderingContext2D, width: number, height: number): void {
     const player = cars[0];
     const baseDistance = player.distance;
+    const mobileView = options.mobile;
     const speedNorm = clamp(player.speed / MAX_SPEED, 0, 1.25);
     const playerSegment = getSegmentAtDistance(baseDistance);
     const isNearCamera = cameraMode === 'near';
+    const curveCenterScale = mobileView ? 124 : 152;
+    const lanePerspectiveScale = mobileView ? 178 : 220;
+    const roadTopHalfRatio = mobileView ? ROAD_TOP_HALF_RATIO + 0.018 : ROAD_TOP_HALF_RATIO;
+    const roadNearHalfRatio = mobileView ? ROAD_NEAR_HALF_RATIO + 0.022 : ROAD_NEAR_HALF_RATIO;
+    const perspectiveDepthScale = mobileView ? 1.04 : 0.92;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const driftNorm = drifting ? 1 : 0;
@@ -2042,8 +2050,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const horizonBase = isNearCamera
       ? 0.006 - speedNorm * 0.024 - boostNorm * 0.008 - overtakeCompression * 0.026 + lossPull * 0.056
       : 0.072 - speedNorm * 0.018 - overtakeCompression * 0.015 + lossPull * 0.034;
+    const mobileHorizonLift = mobileView ? -height * 0.055 : 0;
     const horizonY = clamp(
-      height * horizonBase - playerSegment.hill * (isNearCamera ? 18 : 11),
+      height * horizonBase - playerSegment.hill * (isNearCamera ? 18 : 11) + mobileHorizonLift,
       -height * 0.08,
       height * 0.14,
     );
@@ -2067,15 +2076,20 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const perspective = 1 - depth;
       const hillShift = segment.hill * (0.14 + perspective * 1.45) * (isNearCamera ? 32 : 21);
       const y =
-        horizonY + (perspective * perspective * height * 0.92) / (fovFactor * cameraDistance) + cameraJitterY + hillShift;
-      const halfRatio = ROAD_TOP_HALF_RATIO + (ROAD_NEAR_HALF_RATIO - ROAD_TOP_HALF_RATIO) * perspective;
+        horizonY + (perspective * perspective * height * perspectiveDepthScale) / (fovFactor * cameraDistance) + cameraJitterY + hillShift;
+      const halfRatio = roadTopHalfRatio + (roadNearHalfRatio - roadTopHalfRatio) * perspective;
       const halfWidth =
         width *
         (halfRatio +
           (speedNorm * (isNearCamera ? 0.012 : 0.007) + overtakeCompression * 0.009 - lossPull * 0.007) * perspective);
       const waveYaw = Math.sin((worldDistance + raceTimeMs * 0.05) * 0.0019) * perspective * (0.35 + speedNorm * 0.7);
       const xCenter =
-        width * 0.5 + curveAcc * 152 - player.lane * perspective * 220 + cameraJitterX * 0.34 + cameraLean * 0.52 + waveYaw;
+        width * 0.5 +
+        curveAcc * curveCenterScale -
+        player.lane * perspective * lanePerspectiveScale +
+        cameraJitterX * 0.34 +
+        cameraLean * 0.52 +
+        waveYaw;
 
       if (y < prevY) {
         const segmentScenes = getScenesAtDistance(worldDistance);
@@ -2850,6 +2864,11 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number): void {
     const player = cars[0];
     const renderDistance = 2400;
+    const mobileView = options.mobile;
+    const laneSpreadBase = mobileView ? 246 : 290;
+    const laneSpreadDepth = mobileView ? 92 : 120;
+    const carYBase = mobileView ? 0.23 : 0.26;
+    const carYSpan = mobileView ? 0.72 : 0.68;
 
     for (let i = 1; i < cars.length; i += 1) {
       const ai = cars[i];
@@ -2859,9 +2878,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
 
       const depth = 1 - rel / renderDistance;
-      const y = height * 0.26 + depth * depth * height * 0.68;
+      const y = height * carYBase + depth * depth * height * carYSpan;
       const laneDelta = ai.lane - player.lane;
-      const x = width * 0.5 + laneDelta * depth * (290 + depth * 120);
+      const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
       const scale = 0.38 + depth * 1.05;
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
       drawCarSprite(
@@ -2970,13 +2989,15 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   }
 
   function renderPlayer(renderCtx: CanvasRenderingContext2D, width: number, height: number, player: CarState, speedNorm: number): void {
+    const mobileView = options.mobile;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const airNorm = clamp(playerAirMs / 720, 0, 1);
     const airArc = 1 - Math.abs(airNorm * 2 - 1);
     const jumpLift = airArc * (26 + speedNorm * 18);
-    const x = width * 0.5 + player.lane * 132;
-    const y = height * (0.82 + Math.sin(raceTimeMs * 0.03) * speedNorm * 0.0035 - boostNorm * 0.006) - jumpLift;
+    const x = width * 0.5 + player.lane * (mobileView ? 112 : 132);
+    const yBase = mobileView ? 0.8 : 0.82;
+    const y = height * (yBase + Math.sin(raceTimeMs * 0.03) * speedNorm * 0.0035 - boostNorm * 0.006) - jumpLift;
     const tilt = currentInput.steer * 0.26 + driftDirection * (drifting ? 0.08 : 0);
 
     if (jumpLift > 1) {
