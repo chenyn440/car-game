@@ -26,6 +26,7 @@ const ENDGAME_PROGRESS = 0.8;
 const RIVAL_SURGE_BASE_MS = 2800;
 const AI_CATCHUP_START_DISTANCE = 120;
 const AI_CATCHUP_SPAN_DISTANCE = 500;
+const AI_FINISH_GRACE_MS = 15_000;
 
 type DifficultyTier = 'normal' | 'hard_mid' | 'hard_pro';
 
@@ -296,6 +297,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
   let lapStartMs = 0;
   let bestLapMs = Number.POSITIVE_INFINITY;
+  let firstAiFinishAtMs = -1;
 
   function startRace(name: string, id: string, config: RaceConfig): void {
     playerName = name;
@@ -367,6 +369,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     finished = false;
     lapStartMs = 0;
     bestLapMs = Number.POSITIVE_INFINITY;
+    firstAiFinishAtMs = -1;
 
     cars = [];
     cars.push(createCar('player', playerName, true, 0));
@@ -807,6 +810,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
     maybeTriggerRivalSurge(player);
     updateAi(dtMs, true);
+    maybeAutoFinishByAi();
     updateTraps(dtMs);
     handleCarInteractions();
     updatePositionBonuses();
@@ -1047,7 +1051,39 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       if (ai.distance >= TRACK_LENGTH * cfg.laps) {
         ai.finished = true;
         ai.finishTimeMs = raceTimeMs;
+        if (firstAiFinishAtMs < 0) {
+          firstAiFinishAtMs = raceTimeMs;
+          pushMessage(`${ai.name} 已冲线`);
+        }
       }
+    }
+  }
+
+  function maybeAutoFinishByAi(): void {
+    if (finished) {
+      return;
+    }
+
+    const player = cars[0];
+    if (player.finished) {
+      return;
+    }
+
+    const aiCars = cars.slice(1);
+    const finishedAiCount = aiCars.reduce((count, ai) => count + (ai.finished ? 1 : 0), 0);
+    if (finishedAiCount === 0) {
+      return;
+    }
+
+    if (finishedAiCount === aiCars.length) {
+      pushMessage('所有对手已完赛，比赛结束');
+      finishRace();
+      return;
+    }
+
+    if (firstAiFinishAtMs >= 0 && raceTimeMs - firstAiFinishAtMs >= AI_FINISH_GRACE_MS) {
+      pushMessage('对手领先完赛，比赛超时结算');
+      finishRace();
     }
   }
 
