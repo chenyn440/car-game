@@ -3194,7 +3194,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     playerScreenLane: number,
   ): void {
     const boostNorm = clamp(player.boostMs / 850, 0, 1);
-    if (speedNorm < 0.28) {
+    if (speedNorm < 0.06) {
       return;
     }
 
@@ -3802,8 +3802,8 @@ function simulatePlayerStepFallback(
 
   const dtSec = Math.max(0, dtMs) / 1000;
   let nextSpeed = clamp(speed + acc * dtSec, 0, MAX_SPEED * 1.2);
-  if (!brake && nextSpeed < 30) {
-    nextSpeed = 30;
+  if (!brake && nextSpeed < 42) {
+    nextSpeed = 42;
   }
 
   const steerPower = (steer + driftDirection * (drifting ? 0.18 : 0)) * (0.78 + speedRatio * 0.52);
