@@ -309,6 +309,8 @@ let coachShownOnce = localStorage.getItem('turbo-drift-coach-seen') === '1';
 let lastHudPosition = Number.POSITIVE_INFINITY;
 let hudOvertakePulseTimer: number | null = null;
 let hudLossPulseTimer: number | null = null;
+let hudImpactPulseTimer: number | null = null;
+let speedImpactPulseTimer: number | null = null;
 let lastRuntimeToastAt = 0;
 let hudCollapsed = localStorage.getItem(HUD_COLLAPSE_KEY) === '1';
 
@@ -635,11 +637,13 @@ async function startRun(playerName: string): Promise<void> {
 function buildInputState(): InputState {
   const left = keyState.left || touchState.left;
   const right = keyState.right || touchState.right;
+  const braking = keyState.brake || touchState.brake;
+  const throttlePressed = keyState.throttle || touchState.throttle;
 
   return {
     steer: (right ? 1 : 0) + (left ? -1 : 0),
-    throttle: keyState.throttle || touchState.throttle,
-    brake: keyState.brake || touchState.brake,
+    throttle: throttlePressed,
+    brake: braking,
     drift: keyState.drift || touchState.drift,
     nitro: keyState.nitro || touchState.nitro,
     useItem: pendingUseItem,
@@ -654,6 +658,8 @@ function stopRun(): void {
   rankCardEl.classList.remove('overtake-pulse');
   hud.classList.remove('loss-pulse');
   rankCardEl.classList.remove('loss-pulse');
+  hud.classList.remove('impact-pulse');
+  speedEl.classList.remove('impact-pulse');
   if (hudOvertakePulseTimer !== null) {
     window.clearTimeout(hudOvertakePulseTimer);
     hudOvertakePulseTimer = null;
@@ -661,6 +667,14 @@ function stopRun(): void {
   if (hudLossPulseTimer !== null) {
     window.clearTimeout(hudLossPulseTimer);
     hudLossPulseTimer = null;
+  }
+  if (hudImpactPulseTimer !== null) {
+    window.clearTimeout(hudImpactPulseTimer);
+    hudImpactPulseTimer = null;
+  }
+  if (speedImpactPulseTimer !== null) {
+    window.clearTimeout(speedImpactPulseTimer);
+    speedImpactPulseTimer = null;
   }
   lastHudPosition = Number.POSITIVE_INFINITY;
   if (rafId !== null) {
@@ -738,6 +752,13 @@ function flushEngineEvents(events: EngineEvent[]): void {
     }
 
     if (event.type === 'message') {
+      if (
+        event.payload.text.includes('撞上路障') ||
+        event.payload.text.includes('撞上动态障碍') ||
+        event.payload.text.includes('冲击减速')
+      ) {
+        triggerObstacleImpactPulse();
+      }
       showToast(event.payload.text);
       continue;
     }
@@ -872,6 +893,30 @@ function triggerHudLossPulse(): void {
     rankCardEl.classList.remove('loss-pulse');
     hudLossPulseTimer = null;
   }, 340);
+}
+
+function triggerObstacleImpactPulse(): void {
+  hud.classList.remove('impact-pulse');
+  speedEl.classList.remove('impact-pulse');
+  void hud.offsetWidth;
+  hud.classList.add('impact-pulse');
+  speedEl.classList.add('impact-pulse');
+
+  if (hudImpactPulseTimer !== null) {
+    window.clearTimeout(hudImpactPulseTimer);
+  }
+  hudImpactPulseTimer = window.setTimeout(() => {
+    hud.classList.remove('impact-pulse');
+    hudImpactPulseTimer = null;
+  }, 420);
+
+  if (speedImpactPulseTimer !== null) {
+    window.clearTimeout(speedImpactPulseTimer);
+  }
+  speedImpactPulseTimer = window.setTimeout(() => {
+    speedEl.classList.remove('impact-pulse');
+    speedImpactPulseTimer = null;
+  }, 360);
 }
 
 async function onRaceFinished(result: RaceResult, leaderboard: RunResult): Promise<void> {

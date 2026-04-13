@@ -7,17 +7,33 @@ const MAX_STEPS = 5;
 const TRACK_SEGMENTS = 260;
 const SEGMENT_LENGTH = 140;
 const TRACK_LENGTH = TRACK_SEGMENTS * SEGMENT_LENGTH;
+const WORLD_PROGRESS_SCALE = 2.45;
 const MAX_SPEED = 520;
-const CRUISE_SPEED = 132;
-const DESKTOP_CRUISE_FLOOR = 72;
-const MOBILE_CRUISE_FLOOR = 44;
-const MIN_DESKTOP_DRAW_DISTANCE = 108;
+const DESKTOP_CRUISE_FLOOR = 118;
+const MOBILE_CRUISE_FLOOR = 82;
+const DESKTOP_STUN_ROLL_FLOOR = 86;
+const MOBILE_STUN_ROLL_FLOOR = 60;
+const STALL_SPEED_THRESHOLD_DESKTOP = 64;
+const STALL_SPEED_THRESHOLD_MOBILE = 44;
+const STALL_RECOVERY_TRIGGER_MS = 900;
+const STALL_RECOVERY_COOLDOWN_MS = 1900;
+const DESKTOP_STALL_RECOVERY_SPEED = 136;
+const MOBILE_STALL_RECOVERY_SPEED = 96;
+const DESKTOP_OBSTACLE_RENDER_SCALE = 1.62;
+const MOBILE_OBSTACLE_RENDER_SCALE = 1.12;
+const STATIC_OBSTACLE_HIT_LANE_THRESHOLD = 0.31;
+const STATIC_OBSTACLE_NEAR_MISS_MIN = 0.27;
+const STATIC_OBSTACLE_NEAR_MISS_MAX = 0.46;
+const DYNAMIC_OBSTACLE_HIT_LANE_BASE = 0.27;
+const OBSTACLE_IMPACT_BASE_MS = 360;
+const OBSTACLE_IMPACT_HEAVY_MS = 560;
+const MIN_DESKTOP_DRAW_DISTANCE = 100;
 const MIN_MOBILE_DRAW_DISTANCE = 96;
 const MIN_ROAD_X = -1.28;
 const MAX_ROAD_X = 1.28;
-const DRAW_DISTANCE = 146;
+const DRAW_DISTANCE = 132;
 const MOBILE_DRAW_DISTANCE = 118;
-const DESKTOP_HUD_FLUSH_MS = 90;
+const DESKTOP_HUD_FLUSH_MS = 130;
 const MOBILE_HUD_FLUSH_MS = 120;
 const MOBILE_MAX_STEPS = 8;
 const ITEM_INTERVAL_DISTANCE = 1450;
@@ -200,6 +216,66 @@ interface FallbackEngineOptions {
     driftDirection: number,
     dtMs: number,
   ) => { speed: number; lane: number };
+  simulateAiStep?: (
+    speed: number,
+    lane: number,
+    targetLane: number,
+    targetSpeed: number,
+    aiRisk: number,
+    laneProfileMul: number,
+    dtMs: number,
+    blocked: boolean,
+    stunned: boolean,
+    chokeMin: number,
+    chokeMax: number,
+    hasChoke: boolean,
+    cliffGust: number,
+  ) => { speed: number; lane: number };
+  simulateAiStepBatch?: (inputs: Float32Array) => Float32Array;
+  simulateAiHazardBatch?: (
+    aiInputs: Float32Array,
+    staticInputs: Float32Array,
+    dynamicInputs: Float32Array,
+    trackLength: number,
+  ) => Float32Array;
+  detectPlayerStaticHazardsBatch?: (
+    playerDistance: number,
+    playerLane: number,
+    playerSpeed: number,
+    playerAirMs: number,
+    staticInputs: Float32Array,
+    trackLength: number,
+  ) => Float32Array;
+  detectPlayerDynamicHazardsBatch?: (
+    playerDistance: number,
+    playerLane: number,
+    playerSpeed: number,
+    playerAirMs: number,
+    dynamicInputs: Float32Array,
+    trackLength: number,
+  ) => Float32Array;
+  detectPlayerInteractionsBatch?: (
+    playerDistance: number,
+    playerLane: number,
+    aiInputs: Float32Array,
+    trapInputs: Float32Array,
+    trackLength: number,
+  ) => Float32Array;
+  computePlayerRelationsBatch?: (
+    playerDistance: number,
+    playerLane: number,
+    playerSpeed: number,
+    currentSteer: number,
+    previousOvertakeSide: number,
+    aiInputs: Float32Array,
+    trackLength: number,
+  ) => Float32Array;
+  selectNearestAheadTargetIndex?: (
+    userDistance: number,
+    candidateDistances: Float32Array,
+    maxDistance: number,
+    trackLength: number,
+  ) => number;
   onReadyMessage?: string;
 }
 
@@ -285,6 +361,15 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   let rivalSurgeSide: -1 | 1 = 1;
   let offroadMs = 0;
   let offroadWarnCooldownMs = 0;
+  let playerCarContactCooldownMs = 0;
+  let playerTrapContactCooldownMs = 0;
+  let playerStallMs = 0;
+  let playerStallRecoveryCooldownMs = 0;
+  let stateRepairCooldownMs = 0;
+  let playerNoProgressMs = 0;
+  let obstacleImpactMs = 0;
+  let obstacleImpactSide: -1 | 1 = 1;
+  let obstacleImpactStrength = 0;
 
   let currentInput: InputState = {
     steer: 0,
@@ -371,6 +456,15 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     rivalSurgeSide = 1;
     offroadMs = 0;
     offroadWarnCooldownMs = 0;
+    playerCarContactCooldownMs = 0;
+    playerTrapContactCooldownMs = 0;
+    playerStallMs = 0;
+    playerStallRecoveryCooldownMs = 0;
+    stateRepairCooldownMs = 0;
+    playerNoProgressMs = 0;
+    obstacleImpactMs = 0;
+    obstacleImpactSide = 1;
+    obstacleImpactStrength = 0;
     previousUseItem = false;
     traps = [];
     finished = false;
@@ -413,10 +507,6 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         : aiIndex % 3 === 2
           ? 'balanced'
           : 'defensive';
-    const gridCenter = (cfg.aiCount - 1) * 0.5;
-    const gridOffset = aiIndex - 1 - gridCenter;
-    const launchOffset = gridOffset * 34;
-    const profileLaunchOffset = aiProfile === 'aggressive' ? 16 : aiProfile === 'defensive' ? -8 : 4;
     const contenderBonus = aiIndex >= Math.max(2, Math.ceil(cfg.aiCount * 0.72)) ? 0.08 : 0;
 
     return {
@@ -426,7 +516,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       aiProfile,
       lane,
       speed: isPlayer ? 0 : 132 + aiIndex * 10 + (aiProfile === 'aggressive' ? 10 : 0),
-      distance: isPlayer ? 0 : launchOffset + profileLaunchOffset,
+      // Unified start line: all racers spawn at the same longitudinal position.
+      distance: 0,
       lap: 1,
       finished: false,
       finishTimeMs: 0,
@@ -446,15 +537,55 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   }
 
   function setInput(input: InputState): void {
+    const braking = Boolean(input.brake);
     currentInput = {
       steer: Math.max(-1, Math.min(1, input.steer)),
-      throttle: input.throttle,
-      brake: input.brake,
+      throttle: Boolean(input.throttle),
+      brake: braking,
       drift: input.drift,
       nitro: input.nitro,
       useItem: input.useItem,
       cameraToggle: input.cameraToggle,
     };
+  }
+
+  function sanitizeCarMotionState(car: CarState, isPlayer: boolean): void {
+    const playerFloor = options.mobile ? MOBILE_CRUISE_FLOOR : DESKTOP_CRUISE_FLOOR;
+    let repaired = false;
+    if (!Number.isFinite(car.speed)) {
+      car.speed = isPlayer ? playerFloor : 120;
+      repaired = true;
+    }
+    car.speed = clamp(car.speed, 0, MAX_SPEED * 1.22);
+
+    if (!Number.isFinite(car.lane)) {
+      car.lane = 0;
+      repaired = true;
+    }
+    car.lane = clamp(car.lane, -1.6, 1.6);
+
+    if (!Number.isFinite(car.distance) || car.distance < 0) {
+      car.distance = 0;
+      repaired = true;
+    }
+
+    if (!Number.isFinite(car.stunMs) || car.stunMs < 0) {
+      car.stunMs = 0;
+      repaired = true;
+    }
+    if (!Number.isFinite(car.shieldMs) || car.shieldMs < 0) {
+      car.shieldMs = 0;
+      repaired = true;
+    }
+    if (!Number.isFinite(car.boostMs) || car.boostMs < 0) {
+      car.boostMs = 0;
+      repaired = true;
+    }
+
+    if (repaired && stateRepairCooldownMs <= 0) {
+      pushRuntimeError('检测到异常状态，已自动纠正');
+      stateRepairCooldownMs = 2200;
+    }
   }
 
   function tick(nowMs: number): void {
@@ -484,17 +615,11 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         steps += 1;
       }
 
-      if (steps === maxStepsPerTick && accumulator >= FIXED_STEP_MS * 2) {
-        let catchupMs = Math.min(accumulator, options.mobile ? 280 : 180);
-        const catchupStepMs = FIXED_STEP_MS * 2;
-        while (catchupMs > 0) {
-          const stepMs = Math.min(catchupStepMs, catchupMs);
-          simulate(stepMs);
-          catchupMs -= stepMs;
-        }
-        accumulator = 0;
+      if (steps === maxStepsPerTick && accumulator >= FIXED_STEP_MS) {
+        // Drop excessive backlog instead of burst catch-up simulation to avoid visual jumps.
+        accumulator = Math.min(accumulator, FIXED_STEP_MS * 0.7);
         stableRuntimeMs = 0;
-        dynamicDrawDistance = Math.max(minDrawDistance, dynamicDrawDistance - (options.mobile ? 4 : 6));
+        dynamicDrawDistance = Math.max(minDrawDistance, dynamicDrawDistance - (options.mobile ? 3 : 4));
         if (runtimeRecoveryCooldownMs <= 0) {
           pushRuntimeError('帧积压过大，已自动恢复时钟');
           runtimeRecoveryCooldownMs = recoveryRuntimeCooldown;
@@ -535,6 +660,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     }
 
     const player = cars[0];
+    sanitizeCarMotionState(player, true);
+    const stepStartDistance = player.distance;
 
     if (currentInput.cameraToggle && !cameraToggleLatch) {
       cameraToggleLatch = true;
@@ -559,7 +686,13 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         }
         pushMessage('Go!');
       }
-      updateAi(dtMs, false);
+      // Freeze AI during countdown so nobody moves before "Go!".
+      for (let i = 1; i < cars.length; i += 1) {
+        const ai = cars[i];
+        ai.speed = 0;
+        ai.boostMs = 0;
+        ai.stunMs = Math.max(0, ai.stunMs - dtMs);
+      }
       return;
     }
 
@@ -580,6 +713,12 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     rivalSurgeMs = Math.max(0, rivalSurgeMs - dtMs);
     rivalSurgeCooldownMs = Math.max(0, rivalSurgeCooldownMs - dtMs);
     offroadWarnCooldownMs = Math.max(0, offroadWarnCooldownMs - dtMs);
+    playerCarContactCooldownMs = Math.max(0, playerCarContactCooldownMs - dtMs);
+    playerTrapContactCooldownMs = Math.max(0, playerTrapContactCooldownMs - dtMs);
+    playerStallRecoveryCooldownMs = Math.max(0, playerStallRecoveryCooldownMs - dtMs);
+    stateRepairCooldownMs = Math.max(0, stateRepairCooldownMs - dtMs);
+    obstacleImpactMs = Math.max(0, obstacleImpactMs - dtMs);
+    obstacleImpactStrength = Math.max(0, obstacleImpactStrength - dtMs * 0.0018);
 
     const speedRatio = clamp(player.speed / MAX_SPEED, 0, 1.25);
     const curveAtPlayer = getSegmentAtDistance(player.distance).curve;
@@ -703,20 +842,20 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
     const roadOverflow = Math.max(0, Math.abs(player.lane) - MAX_ROAD_X);
     if (roadOverflow > 0) {
-      offroadMs = Math.min(2200, offroadMs + dtMs * (1 + roadOverflow * 2.2));
-      if (stabilityAssistActive) {
-        player.lane = lerp(player.lane, clamp(stabilityAimLane, -0.34, 0.34), clamp(0.09 + dtMs * 0.00035, 0.09, 0.28));
-      }
-      const offroadDrag = clamp(0.985 - roadOverflow * 0.035, 0.89, 0.985);
+      offroadMs = Math.min(2200, offroadMs + dtMs * (0.72 + roadOverflow * 1.4));
+      const shoulderAimLane = clamp(stabilityAimLane, -0.28, 0.28);
+      const shoulderRecoveryBlend = clamp(0.12 + roadOverflow * 0.06 + dtMs * 0.00025, 0.12, 0.36);
+      player.lane = lerp(player.lane, shoulderAimLane, shoulderRecoveryBlend);
+      const offroadDrag = clamp(0.992 - roadOverflow * 0.018, 0.94, 0.992);
       player.speed *= offroadDrag;
-      player.boostMs = Math.max(0, player.boostMs - dtMs * (0.48 + roadOverflow * 0.72));
-      nitro = Math.max(0, nitro - dtMs * (0.007 + roadOverflow * 0.01));
-      if (offroadMs > 380 && offroadWarnCooldownMs <= 0) {
+      player.boostMs = Math.max(0, player.boostMs - dtMs * (0.28 + roadOverflow * 0.42));
+      nitro = Math.max(0, nitro - dtMs * (0.004 + roadOverflow * 0.006));
+      if (offroadMs > 520 && offroadWarnCooldownMs <= 0) {
         pushMessage('压上路肩，速度流失');
         offroadWarnCooldownMs = 980;
       }
-      if (offroadMs > 920 && player.stunMs < 160) {
-        player.stunMs = 160;
+      if (offroadMs > 1460 && player.stunMs < 90) {
+        player.stunMs = 90;
       }
     } else {
       offroadMs = Math.max(0, offroadMs - dtMs * 2.6);
@@ -734,10 +873,29 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
     }
 
-    // Keep a minimal rolling speed to avoid the "stuck" feeling when not braking.
-    if (!currentInput.brake && player.stunMs <= 0) {
+    // Keep manual throttle feel: rolling floor only while throttle is pressed.
+    if (!currentInput.brake && currentInput.throttle) {
       const cruiseFloor = options.mobile ? MOBILE_CRUISE_FLOOR : DESKTOP_CRUISE_FLOOR;
-      player.speed = Math.max(player.speed, cruiseFloor);
+      const stunFloor = options.mobile ? MOBILE_STUN_ROLL_FLOOR : DESKTOP_STUN_ROLL_FLOOR;
+      const rollingFloor = player.stunMs > 0 ? stunFloor : cruiseFloor;
+      player.speed = Math.max(player.speed, rollingFloor);
+    }
+
+    const stallThreshold = options.mobile ? STALL_SPEED_THRESHOLD_MOBILE : STALL_SPEED_THRESHOLD_DESKTOP;
+    if (!currentInput.brake && currentInput.throttle && player.speed < stallThreshold) {
+      playerStallMs = Math.min(STALL_RECOVERY_TRIGGER_MS * 2.2, playerStallMs + dtMs);
+    } else {
+      playerStallMs = Math.max(0, playerStallMs - dtMs * 1.8);
+    }
+
+    if (playerStallMs >= STALL_RECOVERY_TRIGGER_MS && playerStallRecoveryCooldownMs <= 0) {
+      const recoverySpeed = options.mobile ? MOBILE_STALL_RECOVERY_SPEED : DESKTOP_STALL_RECOVERY_SPEED;
+      player.speed = Math.max(player.speed, recoverySpeed * 0.9);
+      player.stunMs = Math.min(player.stunMs, 160);
+      offroadMs = Math.max(0, offroadMs - 520);
+      player.lane = lerp(player.lane, clamp(stabilityAimLane, -0.42, 0.42), 0.24);
+      playerStallMs = 0;
+      playerStallRecoveryCooldownMs = STALL_RECOVERY_COOLDOWN_MS;
     }
 
     const activeZones = getZonesForCar(player.distance, player.lane);
@@ -820,8 +978,17 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       draftingMs = Math.max(0, draftingMs - dtMs * 1.5);
     }
 
+    // Final forward-motion guard: zones/hazards may have reduced speed after
+    // the early floor logic, so enforce a last rolling floor before advancing distance.
+    if (!currentInput.brake && currentInput.throttle) {
+      const cruiseFloor = options.mobile ? MOBILE_CRUISE_FLOOR : DESKTOP_CRUISE_FLOOR;
+      const stunFloor = options.mobile ? MOBILE_STUN_ROLL_FLOOR : DESKTOP_STUN_ROLL_FLOOR;
+      const rollingFloor = player.stunMs > 0 ? stunFloor : cruiseFloor;
+      player.speed = Math.max(player.speed, rollingFloor);
+    }
+
     const prevLap = player.lap;
-    player.distance += player.speed * (dtMs / 1000);
+    player.distance += player.speed * (dtMs / 1000) * WORLD_PROGRESS_SCALE;
     player.lap = Math.floor(player.distance / TRACK_LENGTH) + 1;
 
     if (player.lap > prevLap) {
@@ -864,6 +1031,24 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     maybeAutoFinishByAi();
     updateTraps(dtMs);
     handleCarInteractions();
+    const movedDistance = player.distance - stepStartDistance;
+    const noProgressThreshold = options.mobile ? 0.75 : 1.1;
+    if (!currentInput.brake && currentInput.throttle && countdownMs <= 0 && movedDistance < noProgressThreshold) {
+      playerNoProgressMs = Math.min(2400, playerNoProgressMs + dtMs);
+    } else {
+      playerNoProgressMs = Math.max(0, playerNoProgressMs - dtMs * 1.8);
+    }
+    if (playerNoProgressMs > 260) {
+      const recoverRatio = clamp((playerNoProgressMs - 260) / 720, 0, 1);
+      const recoverySpeed = options.mobile ? MOBILE_STALL_RECOVERY_SPEED : DESKTOP_STALL_RECOVERY_SPEED;
+      player.speed = Math.max(player.speed, recoverySpeed * (0.82 + recoverRatio * 0.26));
+      player.stunMs = Math.min(player.stunMs, 160 - recoverRatio * 80);
+      player.lane = lerp(
+        player.lane,
+        clamp(preferredLaneForDistance(player.distance + 90) * 0.3, -0.34, 0.34),
+        0.08 + recoverRatio * 0.16,
+      );
+    }
     updatePositionBonuses();
 
     if (player.distance >= TRACK_LENGTH * cfg.laps && !finished) {
@@ -908,15 +1093,33 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
 
   function updateAi(dtMs: number, raceActive: boolean): void {
     const player = cars[0];
+    sanitizeCarMotionState(player, true);
     const ranking = [...cars].sort((a, b) => b.distance - a.distance);
     const playerPosition = ranking.findIndex((car) => car.id === player.id) + 1;
     const raceProgress = clamp(player.distance / (TRACK_LENGTH * cfg.laps), 0, 1);
     const leadPressureMul =
       playerPosition <= 2 ? 1 + (3 - playerPosition) * (0.026 + difficultyPreset.aiAggression * 0.02) : 1;
     const backfieldEaseMul = playerPosition >= Math.max(4, cars.length - 1) ? 0.985 : 1;
+    type AiStepPlan = {
+      ai: CarState;
+      profile: CarState['aiProfile'];
+      endgameFactor: number;
+      chaseIntensity: number;
+      rivalSurgeNorm: number;
+      blocked: boolean;
+      laneProfileMul: number;
+      targetSpeed: number;
+      chokeMin: number;
+      chokeMax: number;
+      hasChoke: boolean;
+      cliffGust: number;
+      stunned: boolean;
+    };
+    const stepPlans: AiStepPlan[] = [];
 
     for (let i = 1; i < cars.length; i += 1) {
       const ai = cars[i];
+      sanitizeCarMotionState(ai, false);
       if (ai.finished) {
         continue;
       }
@@ -931,6 +1134,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       if (raceActive && ai.id === rivalId) {
         ai.aiUseItemCooldownMs -= dtMs * 0.28;
       }
+
       const profile = ai.aiProfile;
       const rivalSurgeNorm = ai.id === rivalId ? clamp(rivalSurgeMs / (RIVAL_SURGE_BASE_MS + 1200), 0, 1) : 0;
       const endgameFactor = raceProgress > ENDGAME_PROGRESS ? (raceProgress - ENDGAME_PROGRESS) / (1 - ENDGAME_PROGRESS) : 0;
@@ -983,19 +1187,14 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         }
       }
 
-      const laneDelta = ai.aiTargetLane - ai.lane;
-      const laneStep = (0.015 + ai.aiRiskLevel * 0.015) * (profile === 'aggressive' ? 1.08 : profile === 'defensive' ? 0.85 : 1);
-      ai.lane += clamp(laneDelta, -laneStep, laneStep) * (dtMs / FIXED_STEP_MS);
-      if (chokeBounds) {
-        ai.lane = clamp(ai.lane, chokeBounds.laneMin - 0.02, chokeBounds.laneMax + 0.02);
-      }
-
+      const blocked = ai.aiBlockUntilMs > raceTimeMs;
+      const laneProfileMul = profile === 'aggressive' ? 1.08 : profile === 'defensive' ? 0.85 : 1;
       const aiScenes = getScenesAtDistance(ai.distance);
       const aiBridgeScene = getSceneByType(aiScenes, 'bridge');
       const aiCliffScene = getSceneByType(aiScenes, 'cliff');
       let targetSpeed = (184 + ai.aiSkill * 204) * (raceActive ? 1 : 0.45) * difficultyPreset.aiTargetSpeedFactor;
       targetSpeed += profile === 'aggressive' ? 28 : profile === 'defensive' ? -8 : 10;
-      if (ai.aiBlockUntilMs > raceTimeMs) {
+      if (blocked) {
         targetSpeed += 10;
       }
       if (relToPlayer > 20 && relToPlayer < 340) {
@@ -1039,21 +1238,225 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       }
       targetSpeed *= 1 + difficultyPreset.endgamePressure * endgameFactor * 0.055;
 
-      const speedDiff = targetSpeed - ai.speed;
-      const speedRate = 0.013 + ai.aiRiskLevel * 0.005 + (ai.aiBlockUntilMs > raceTimeMs ? 0.002 : 0);
-      ai.speed += clamp(speedDiff * speedRate, -20, 20) * (dtMs / FIXED_STEP_MS);
-      if (ai.stunMs > 0) {
-        ai.speed *= 0.95;
-      }
-      ai.speed = clamp(ai.speed, 66, MAX_SPEED * 1.08);
-      if (aiCliffScene) {
-        const gust = Math.sin(raceTimeMs * 0.0043 + ai.distance * 0.0015) * aiCliffScene.intensity;
-        ai.lane += gust * (aiCliffScene.side ?? 1) * 0.00042 * dtMs;
+      const cliffGust = aiCliffScene
+        ? Math.sin(raceTimeMs * 0.0043 + ai.distance * 0.0015) * aiCliffScene.intensity * (aiCliffScene.side ?? 1)
+        : 0;
+      stepPlans.push({
+        ai,
+        profile,
+        endgameFactor,
+        chaseIntensity,
+        rivalSurgeNorm,
+        blocked,
+        laneProfileMul,
+        targetSpeed,
+        chokeMin: chokeBounds?.laneMin ?? 0,
+        chokeMax: chokeBounds?.laneMax ?? 0,
+        hasChoke: Boolean(chokeBounds),
+        cliffGust,
+        stunned: ai.stunMs > 0,
+      });
+    }
+
+    const applySingleAiStep = (plan: AiStepPlan): void => {
+      const { ai } = plan;
+      const nextAiStep = tuning.simulateAiStep
+        ? tuning.simulateAiStep(
+            ai.speed,
+            ai.lane,
+            ai.aiTargetLane,
+            plan.targetSpeed,
+            ai.aiRiskLevel,
+            plan.laneProfileMul,
+            dtMs,
+            plan.blocked,
+            plan.stunned,
+            plan.chokeMin,
+            plan.chokeMax,
+            plan.hasChoke,
+            plan.cliffGust,
+          )
+        : simulateAiStepFallback(
+            ai.speed,
+            ai.lane,
+            ai.aiTargetLane,
+            plan.targetSpeed,
+            ai.aiRiskLevel,
+            plan.laneProfileMul,
+            dtMs,
+            plan.blocked,
+            plan.stunned,
+            plan.chokeMin,
+            plan.chokeMax,
+            plan.hasChoke,
+            plan.cliffGust,
+          );
+      ai.speed = nextAiStep.speed;
+      ai.lane = nextAiStep.lane;
+    };
+
+    if (stepPlans.length > 0 && tuning.simulateAiStepBatch && stepPlans.length > 1) {
+      const stride = 13;
+      const packed = new Float32Array(stepPlans.length * stride);
+      for (let idx = 0; idx < stepPlans.length; idx += 1) {
+        const plan = stepPlans[idx];
+        const base = idx * stride;
+        packed[base] = plan.ai.speed;
+        packed[base + 1] = plan.ai.lane;
+        packed[base + 2] = plan.ai.aiTargetLane;
+        packed[base + 3] = plan.targetSpeed;
+        packed[base + 4] = plan.ai.aiRiskLevel;
+        packed[base + 5] = plan.laneProfileMul;
+        packed[base + 6] = dtMs;
+        packed[base + 7] = plan.blocked ? 1 : 0;
+        packed[base + 8] = plan.stunned ? 1 : 0;
+        packed[base + 9] = plan.chokeMin;
+        packed[base + 10] = plan.chokeMax;
+        packed[base + 11] = plan.hasChoke ? 1 : 0;
+        packed[base + 12] = plan.cliffGust;
       }
 
+      const result = tuning.simulateAiStepBatch(packed);
+      if (result.length === stepPlans.length * 2) {
+        for (let idx = 0; idx < stepPlans.length; idx += 1) {
+          const plan = stepPlans[idx];
+          plan.ai.speed = Number.isFinite(result[idx * 2]) ? result[idx * 2] : plan.ai.speed;
+          plan.ai.lane = Number.isFinite(result[idx * 2 + 1]) ? result[idx * 2 + 1] : plan.ai.lane;
+        }
+      } else {
+        for (const plan of stepPlans) {
+          applySingleAiStep(plan);
+        }
+      }
+    } else {
+      for (const plan of stepPlans) {
+        applySingleAiStep(plan);
+      }
+    }
+
+    const aiStaticHazardMeta: Array<{ localDistance: number; zoneId: string; slot: number }> = [];
+    const aiDynamicHazardMeta: Array<{ localDistance: number; obstacleId: string }> = [];
+    const staticHitIndices = new Int32Array(stepPlans.length).fill(-1);
+    const dynamicHitIndices = new Int32Array(stepPlans.length).fill(-1);
+    let hazardBatchApplied = false;
+    if (stepPlans.length > 0 && tuning.simulateAiHazardBatch) {
+      const aiStride = 4;
+      const aiPacked = new Float32Array(stepPlans.length * aiStride);
+      for (let idx = 0; idx < stepPlans.length; idx += 1) {
+        const plan = stepPlans[idx];
+        const packedFlags = (plan.ai.id === rivalId ? 1 : 0) + (plan.profile === 'aggressive' ? 2 : 0);
+        const base = idx * aiStride;
+        aiPacked[base] = plan.ai.distance;
+        aiPacked[base + 1] = plan.ai.lane;
+        aiPacked[base + 2] = plan.ai.aiRiskLevel;
+        aiPacked[base + 3] = packedFlags;
+      }
+
+      const staticPacked: number[] = [];
+      for (const zone of resolvedTrackZones) {
+        if (zone.type !== 'obstacle') {
+          continue;
+        }
+        const offsets = zone.obstacleOffsets ?? [0.5];
+        const lanes = zone.obstacleLanes ?? [(zone.laneMin + zone.laneMax) * 0.5];
+        const count = Math.min(offsets.length, lanes.length);
+        for (let slot = 0; slot < count; slot += 1) {
+          const localDistance = zone.start + (zone.end - zone.start) * offsets[slot];
+          staticPacked.push(localDistance, lanes[slot]);
+          aiStaticHazardMeta.push({ localDistance, zoneId: zone.id, slot });
+        }
+      }
+
+      const dynamicPacked: number[] = [];
+      for (const obstacle of dynamicObstacles) {
+        dynamicPacked.push(
+          obstacle.start,
+          dynamicObstacleLane(obstacle, raceTimeMs) * difficultyPreset.movingObstacleFactor,
+          obstacle.size,
+        );
+        aiDynamicHazardMeta.push({
+          localDistance: obstacle.start,
+          obstacleId: obstacle.id,
+        });
+      }
+
+      if (aiStaticHazardMeta.length > 0 || aiDynamicHazardMeta.length > 0) {
+        const result = tuning.simulateAiHazardBatch(
+          aiPacked,
+          Float32Array.from(staticPacked),
+          Float32Array.from(dynamicPacked),
+          TRACK_LENGTH,
+        );
+        if (result.length === stepPlans.length * 3) {
+          hazardBatchApplied = true;
+          for (let idx = 0; idx < stepPlans.length; idx += 1) {
+            const plan = stepPlans[idx];
+            const laneDelta = result[idx * 3];
+            if (Number.isFinite(laneDelta) && Math.abs(laneDelta) > 0.0001) {
+              plan.ai.lane = clamp(plan.ai.lane + laneDelta, -1.2, 1.2);
+            }
+            const staticIdxRaw = result[idx * 3 + 1];
+            const dynamicIdxRaw = result[idx * 3 + 2];
+            staticHitIndices[idx] = Number.isFinite(staticIdxRaw) ? Math.round(staticIdxRaw) : -1;
+            dynamicHitIndices[idx] = Number.isFinite(dynamicIdxRaw) ? Math.round(dynamicIdxRaw) : -1;
+          }
+        }
+      }
+    }
+
+    const applyAiStaticHitByIndex = (ai: CarState, staticIdx: number): void => {
+      if (staticIdx < 0 || staticIdx >= aiStaticHazardMeta.length) {
+        return;
+      }
+      const meta = aiStaticHazardMeta[staticIdx];
+      const obstacleDistance = toNearestWorldDistance(meta.localDistance, ai.distance);
+      const lapKey = Math.floor(obstacleDistance / TRACK_LENGTH);
+      const key = `${ai.id}:${lapKey}:${meta.zoneId}:${meta.slot}`;
+      if (aiObstacleHitKeys.has(key)) {
+        return;
+      }
+      aiObstacleHitKeys.add(key);
+      if (ai.id === rivalId) {
+        ai.speed *= 0.76;
+        ai.stunMs = Math.max(ai.stunMs, 320);
+      } else {
+        ai.speed *= ai.aiProfile === 'aggressive' ? 0.64 : 0.58;
+        ai.stunMs = Math.max(ai.stunMs, ai.aiProfile === 'aggressive' ? 520 : 660);
+      }
+    };
+
+    const applyAiDynamicHitByIndex = (ai: CarState, dynamicIdx: number): void => {
+      if (dynamicIdx < 0 || dynamicIdx >= aiDynamicHazardMeta.length) {
+        return;
+      }
+      const meta = aiDynamicHazardMeta[dynamicIdx];
+      const worldDistance = toNearestWorldDistance(meta.localDistance, ai.distance);
+      const lapKey = Math.floor(worldDistance / TRACK_LENGTH);
+      const key = `${ai.id}:${lapKey}:${meta.obstacleId}`;
+      if (aiDynamicObstacleHitKeys.has(key)) {
+        return;
+      }
+      aiDynamicObstacleHitKeys.add(key);
+      if (ai.id === rivalId) {
+        ai.speed *= 0.84;
+        ai.stunMs = Math.max(ai.stunMs, 240);
+      } else {
+        ai.speed *= ai.aiProfile === 'aggressive' ? 0.74 : 0.67;
+        ai.stunMs = Math.max(ai.stunMs, ai.aiProfile === 'aggressive' ? 380 : 540);
+      }
+    };
+
+    for (let idx = 0; idx < stepPlans.length; idx += 1) {
+      const plan = stepPlans[idx];
+      const { ai } = plan;
       applyTrackZonesToAi(ai, dtMs);
-      handleAiObstacleCollisions(ai);
-      handleAiDynamicObstacleCollisions(ai);
+      if (hazardBatchApplied) {
+        applyAiStaticHitByIndex(ai, staticHitIndices[idx]);
+        applyAiDynamicHitByIndex(ai, dynamicHitIndices[idx]);
+      } else {
+        handleAiObstacleCollisions(ai);
+        handleAiDynamicObstacleCollisions(ai);
+      }
 
       if (
         raceActive &&
@@ -1069,7 +1472,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         pushMessage(`宿敌干扰波 ${ai.name}`);
       }
 
-      ai.distance += ai.speed * (dtMs / 1000);
+      ai.distance += ai.speed * (dtMs / 1000) * WORLD_PROGRESS_SCALE;
       ai.lap = Math.floor(ai.distance / TRACK_LENGTH) + 1;
 
       if (
@@ -1077,25 +1480,25 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         Math.random() <
           0.0058 *
             difficultyPreset.aiItemGainRate *
-            (1 + endgameFactor * 0.42) *
-            (1 + chaseIntensity * 0.54) *
-            (ai.id === rivalId ? 1.18 + rivalSurgeNorm * 0.3 : 1)
+            (1 + plan.endgameFactor * 0.42) *
+            (1 + plan.chaseIntensity * 0.54) *
+            (ai.id === rivalId ? 1.18 + plan.rivalSurgeNorm * 0.3 : 1)
       ) {
         ai.item = randomItem();
       }
 
       if (ai.item && ai.aiUseItemCooldownMs <= 0 && raceActive) {
-        const itemPlan = planAiItemUse(ai, player, endgameFactor);
+        const itemPlan = planAiItemUse(ai, player, plan.endgameFactor);
         if (itemPlan.use) {
           useItem(ai, ai.item, itemPlan.trapLane !== undefined ? { trapLane: itemPlan.trapLane } : undefined);
           ai.item = null;
           const baseCooldown =
-            profile === 'aggressive'
+            plan.profile === 'aggressive'
               ? 1700 + Math.random() * 1300
-              : profile === 'defensive'
+              : plan.profile === 'defensive'
                 ? 2900 + Math.random() * 2100
                 : 2400 + Math.random() * 1800;
-          ai.aiUseItemCooldownMs = baseCooldown * (itemPlan.cooldownScale ?? 1) * (1 - chaseIntensity * 0.18);
+          ai.aiUseItemCooldownMs = baseCooldown * (itemPlan.cooldownScale ?? 1) * (1 - plan.chaseIntensity * 0.18);
         }
       }
 
@@ -1522,6 +1925,91 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   function handleObstacleCollisions(player: CarState): void {
     const raceProgress = clamp(player.distance / (TRACK_LENGTH * cfg.laps), 0, 1);
     const hazardScale = 1 + Math.max(0, raceProgress - 0.32) * 0.82;
+    if (tuning.detectPlayerStaticHazardsBatch) {
+      type StaticObstacleMeta = { localDistance: number; lane: number; zoneId: string; slot: number };
+      const packed: number[] = [];
+      const metas: StaticObstacleMeta[] = [];
+      for (const zone of resolvedTrackZones) {
+        if (zone.type !== 'obstacle') {
+          continue;
+        }
+        const offsets = zone.obstacleOffsets ?? [0.5];
+        const lanes = zone.obstacleLanes ?? [(zone.laneMin + zone.laneMax) * 0.5];
+        const count = Math.min(offsets.length, lanes.length);
+        for (let i = 0; i < count; i += 1) {
+          const localDistance = zone.start + (zone.end - zone.start) * offsets[i];
+          packed.push(localDistance, lanes[i]);
+          metas.push({ localDistance, lane: lanes[i], zoneId: zone.id, slot: i });
+        }
+      }
+      if (metas.length > 0) {
+        const states = tuning.detectPlayerStaticHazardsBatch(
+          player.distance,
+          player.lane,
+          player.speed,
+          playerAirMs,
+          Float32Array.from(packed),
+          TRACK_LENGTH,
+        );
+        if (states.length === metas.length) {
+          for (let idx = 0; idx < metas.length; idx += 1) {
+            const state = Math.round(states[idx] ?? 0);
+            if (state <= 0) {
+              continue;
+            }
+            const meta = metas[idx];
+            const obstacleDistance = toNearestWorldDistance(meta.localDistance, player.distance);
+            const lapKey = Math.floor(obstacleDistance / TRACK_LENGTH);
+            const key = `${lapKey}:${meta.zoneId}:${meta.slot}`;
+
+            if (state === 1) {
+              if (obstacleHitKeys.has(key)) {
+                continue;
+              }
+              obstacleHitKeys.add(key);
+              obstacleNearMissKeys.delete(key);
+
+              if (player.shieldMs > 0) {
+                player.shieldMs = 0;
+                const penalty = difficultyPreset.obstaclePenaltyFactor;
+                player.speed *= clamp(0.88 - (penalty - 1) * 0.08 - (hazardScale - 1) * 0.06, 0.62, 0.9);
+                player.boostMs = Math.max(0, player.boostMs - (320 + 90 * penalty) * hazardScale);
+                const laneKick = (player.lane >= meta.lane ? 1 : -1) * 0.12;
+                player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
+                triggerObstacleImpact(meta.lane, false, laneKick);
+                pushMessage('护盾爆掉，冲击减速');
+                continue;
+              }
+
+              const penalty = difficultyPreset.obstaclePenaltyFactor;
+              player.stunMs = Math.max(player.stunMs, (1180 + 200 * penalty) * hazardScale);
+              player.speed = Math.min(
+                player.speed * (currentWeather === 'rain' ? 0.24 : 0.3) / (penalty * hazardScale),
+                92 - penalty * 7,
+              );
+              player.boostMs = 0;
+              nitro = Math.max(0, nitro - (12 + penalty * 6) * hazardScale);
+              raceTimeMs += (260 + penalty * 140) * hazardScale;
+              const laneKick = (player.lane >= meta.lane ? 1 : -1) * 0.24;
+              player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
+              styleScore = Math.max(0, styleScore - (220 + penalty * 60) * hazardScale);
+              triggerObstacleImpact(meta.lane, true, laneKick);
+              breakCombo('撞上路障');
+              pushMessage('重撞路障 -0.4s');
+              continue;
+            }
+
+            if (state === 2 && !obstacleNearMissKeys.has(key)) {
+              obstacleNearMissKeys.add(key);
+              styleScore += 140;
+              nitro = Math.min(100, nitro + 5);
+              pushMessage('极限贴边 +140');
+            }
+          }
+          return;
+        }
+      }
+    }
 
     for (const zone of resolvedTrackZones) {
       if (zone.type !== 'obstacle') {
@@ -1541,7 +2029,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         const lapKey = Math.floor(obstacleDistance / TRACK_LENGTH);
         const key = `${lapKey}:${zone.id}:${i}`;
         const laneDiff = Math.abs(player.lane - lanes[i]);
-        if (laneDiff < 0.22 && Math.abs(rel) < 72 && playerAirMs <= 0) {
+        if (laneDiff < STATIC_OBSTACLE_HIT_LANE_THRESHOLD && Math.abs(rel) < 72 && playerAirMs <= 0) {
           if (obstacleHitKeys.has(key)) {
             continue;
           }
@@ -1553,7 +2041,9 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
             const penalty = difficultyPreset.obstaclePenaltyFactor;
             player.speed *= clamp(0.88 - (penalty - 1) * 0.08 - (hazardScale - 1) * 0.06, 0.62, 0.9);
             player.boostMs = Math.max(0, player.boostMs - (320 + 90 * penalty) * hazardScale);
-            player.lane = clamp(player.lane + (player.lane >= lanes[i] ? 1 : -1) * 0.09, -1.6, 1.6);
+            const laneKick = (player.lane >= lanes[i] ? 1 : -1) * 0.12;
+            player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
+            triggerObstacleImpact(lanes[i], false, laneKick);
             pushMessage('护盾爆掉，冲击减速');
             continue;
           }
@@ -1567,14 +2057,23 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
           player.boostMs = 0;
           nitro = Math.max(0, nitro - (12 + penalty * 6) * hazardScale);
           raceTimeMs += (260 + penalty * 140) * hazardScale;
-          player.lane = clamp(player.lane + (player.lane >= lanes[i] ? 1 : -1) * 0.18, -1.6, 1.6);
+          const laneKick = (player.lane >= lanes[i] ? 1 : -1) * 0.24;
+          player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
           styleScore = Math.max(0, styleScore - (220 + penalty * 60) * hazardScale);
+          triggerObstacleImpact(lanes[i], true, laneKick);
           breakCombo('撞上路障');
           pushMessage('重撞路障 -0.4s');
           continue;
         }
 
-        if (laneDiff >= 0.2 && laneDiff < 0.38 && rel > -22 && rel < 90 && player.speed > 145 && !obstacleNearMissKeys.has(key)) {
+        if (
+          laneDiff >= STATIC_OBSTACLE_NEAR_MISS_MIN &&
+          laneDiff < STATIC_OBSTACLE_NEAR_MISS_MAX &&
+          rel > -22 &&
+          rel < 90 &&
+          player.speed > 145 &&
+          !obstacleNearMissKeys.has(key)
+        ) {
           obstacleNearMissKeys.add(key);
           styleScore += 140;
           nitro = Math.min(100, nitro + 5);
@@ -1634,6 +2133,65 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const raceProgress = clamp(player.distance / (TRACK_LENGTH * cfg.laps), 0, 1);
     const hazardScale = 1 + Math.max(0, raceProgress - 0.34) * 0.86;
     const near = getDynamicObstaclesNearDistance(player.distance, 220);
+    if (tuning.detectPlayerDynamicHazardsBatch && near.length > 0) {
+      type DynamicObstacleMeta = { localDistance: number; lane: number; size: number; obstacleId: string };
+      const packed: number[] = [];
+      const metas: DynamicObstacleMeta[] = [];
+      for (const { obstacle } of near) {
+        const lane =
+          dynamicObstacleLane(obstacle, raceTimeMs) *
+          difficultyPreset.movingObstacleFactor *
+          (1 + (hazardScale - 1) * 0.24);
+        packed.push(obstacle.start, lane, obstacle.size);
+        metas.push({
+          localDistance: obstacle.start,
+          lane,
+          size: obstacle.size,
+          obstacleId: obstacle.id,
+        });
+      }
+      const states = tuning.detectPlayerDynamicHazardsBatch(
+        player.distance,
+        player.lane,
+        player.speed,
+        playerAirMs,
+        Float32Array.from(packed),
+        TRACK_LENGTH,
+      );
+      if (states.length === metas.length) {
+        for (let idx = 0; idx < metas.length; idx += 1) {
+          const state = Math.round(states[idx] ?? 0);
+          if (state <= 0) {
+            continue;
+          }
+          const meta = metas[idx];
+          const worldDistance = toNearestWorldDistance(meta.localDistance, player.distance);
+          const lapKey = Math.floor(worldDistance / TRACK_LENGTH);
+          const key = `${lapKey}:${meta.obstacleId}`;
+          if (state === 1) {
+            if (dynamicObstacleHitKeys.has(key)) {
+              continue;
+            }
+            dynamicObstacleHitKeys.add(key);
+            const penalty = difficultyPreset.obstaclePenaltyFactor;
+            player.speed *= clamp(0.62 - (penalty - 1) * 0.1 - (hazardScale - 1) * 0.12, 0.34, 0.72);
+            player.stunMs = Math.max(player.stunMs, (760 + penalty * 220) * hazardScale);
+            player.boostMs = Math.max(0, player.boostMs - (240 + penalty * 80) * hazardScale);
+            const laneKick = (player.lane >= meta.lane ? 1 : -1) * (0.16 + meta.size * 0.035);
+            player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
+            raceTimeMs += (140 + penalty * 120) * hazardScale;
+            nitro = Math.max(0, nitro - (6 + penalty * 4) * hazardScale);
+            triggerObstacleImpact(meta.lane, true, laneKick);
+            breakCombo('撞到移动障碍');
+            pushMessage('撞上动态障碍，车速大损');
+          } else if (state === 2) {
+            styleScore += dtMs * 0.12;
+          }
+        }
+        return;
+      }
+    }
+
     for (const { obstacle, worldDistance } of near) {
       const rel = worldDistance - player.distance;
       if (rel < -50 || rel > 120) {
@@ -1643,7 +2201,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const key = `${lapKey}:${obstacle.id}`;
       const lane = dynamicObstacleLane(obstacle, raceTimeMs) * difficultyPreset.movingObstacleFactor * (1 + (hazardScale - 1) * 0.24);
       const laneDiff = Math.abs(player.lane - lane);
-      const hitLaneThreshold = (0.17 + obstacle.size * 0.02) * (1 + (hazardScale - 1) * 0.18);
+      const hitLaneThreshold = (DYNAMIC_OBSTACLE_HIT_LANE_BASE + obstacle.size * 0.02) * (1 + (hazardScale - 1) * 0.18);
       if (Math.abs(rel) < 64 && laneDiff < hitLaneThreshold) {
         if (dynamicObstacleHitKeys.has(key)) {
           continue;
@@ -1653,9 +2211,11 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         player.speed *= clamp(0.62 - (penalty - 1) * 0.1 - (hazardScale - 1) * 0.12, 0.34, 0.72);
         player.stunMs = Math.max(player.stunMs, (760 + penalty * 220) * hazardScale);
         player.boostMs = Math.max(0, player.boostMs - (240 + penalty * 80) * hazardScale);
-        player.lane = clamp(player.lane + (player.lane >= lane ? 1 : -1) * (0.12 + obstacle.size * 0.03), -1.6, 1.6);
+        const laneKick = (player.lane >= lane ? 1 : -1) * (0.16 + obstacle.size * 0.035);
+        player.lane = clamp(player.lane + laneKick, -1.6, 1.6);
         raceTimeMs += (140 + penalty * 120) * hazardScale;
         nitro = Math.max(0, nitro - (6 + penalty * 4) * hazardScale);
+        triggerObstacleImpact(lane, true, laneKick);
         breakCombo('撞到移动障碍');
         pushMessage('撞上动态障碍，车速大损');
       } else if (rel > -12 && rel < 84 && laneDiff < hitLaneThreshold + 0.1 && player.speed > 165) {
@@ -1698,6 +2258,41 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   }
 
   function getDraftState(player: CarState): { active: boolean; intensity: number; targetName: string } {
+    if (tuning.computePlayerRelationsBatch) {
+      const aiInputs: number[] = [];
+      const aiNames: string[] = [];
+      for (let i = 1; i < cars.length; i += 1) {
+        const ai = cars[i];
+        if (ai.finished) {
+          continue;
+        }
+        aiInputs.push(ai.distance, ai.lane, ai.speed);
+        aiNames.push(ai.name);
+      }
+      if (aiNames.length === 0) {
+        return { active: false, intensity: 0, targetName: '' };
+      }
+      const result = tuning.computePlayerRelationsBatch(
+        player.distance,
+        player.lane,
+        player.speed,
+        currentInput.steer,
+        overtakeFxSide,
+        Float32Array.from(aiInputs),
+        TRACK_LENGTH,
+      );
+      if (result.length >= 4) {
+        const intensity = clamp(Number(result[0] ?? 0), 0, 1.2);
+        const targetIdx = Math.round(Number(result[1] ?? -1));
+        const targetName = targetIdx >= 0 && targetIdx < aiNames.length ? aiNames[targetIdx] : '';
+        return {
+          active: intensity > 0.55,
+          intensity,
+          targetName,
+        };
+      }
+    }
+
     let best: { dist: number; laneDiff: number; targetName: string } | null = null;
 
     for (let i = 1; i < cars.length; i += 1) {
@@ -1741,6 +2336,34 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   }
 
   function getOvertakeCameraState(player: CarState): OvertakeCameraState {
+    if (tuning.computePlayerRelationsBatch) {
+      const aiInputs: number[] = [];
+      for (let i = 1; i < cars.length; i += 1) {
+        const ai = cars[i];
+        if (ai.finished) {
+          continue;
+        }
+        aiInputs.push(ai.distance, ai.lane, ai.speed);
+      }
+      if (aiInputs.length > 0) {
+        const result = tuning.computePlayerRelationsBatch(
+          player.distance,
+          player.lane,
+          player.speed,
+          currentInput.steer,
+          overtakeFxSide,
+          Float32Array.from(aiInputs),
+          TRACK_LENGTH,
+        );
+        if (result.length >= 4) {
+          return {
+            intensity: clamp(Number(result[2] ?? 0), 0, 1),
+            side: Number(result[3] ?? overtakeFxSide) >= 0 ? 1 : -1,
+          };
+        }
+      }
+    }
+
     let bestIntensity = 0;
     let bestSide: -1 | 1 = overtakeFxSide;
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -1829,6 +2452,17 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     driftCombo = 0;
   }
 
+  function triggerObstacleImpact(hitLane: number, heavy: boolean, laneKick: number): void {
+    const playerLane = cars[0]?.lane ?? 0;
+    const laneDelta = hitLane - playerLane;
+    obstacleImpactSide = laneDelta >= 0 ? 1 : -1;
+    obstacleImpactStrength = Math.max(
+      obstacleImpactStrength,
+      clamp((heavy ? 0.62 : 0.4) + Math.abs(laneKick) * 1.35, 0.32, 1),
+    );
+    obstacleImpactMs = Math.max(obstacleImpactMs, heavy ? OBSTACLE_IMPACT_HEAVY_MS : OBSTACLE_IMPACT_BASE_MS);
+  }
+
   function updatePositionBonuses(): void {
     const player = cars[0];
     const ranking = [...cars].sort((a, b) => b.distance - a.distance);
@@ -1888,8 +2522,80 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const airborne = playerAirMs > 0;
     const raceProgress = clamp(player.distance / (TRACK_LENGTH * cfg.laps), 0, 1);
     const hazardScale = 1 + Math.max(0, raceProgress - 0.36) * 0.66;
+    const carContactReady = playerCarContactCooldownMs <= 0;
+    const trapContactReady = playerTrapContactCooldownMs <= 0;
+    if (!airborne && tuning.detectPlayerInteractionsBatch) {
+      const aiPacked: number[] = [];
+      const aiRefs: CarState[] = [];
+      for (let i = 1; i < cars.length; i += 1) {
+        const ai = cars[i];
+        aiPacked.push(ai.distance, ai.lane);
+        aiRefs.push(ai);
+      }
 
+      const trapPacked: number[] = [];
+      const trapRefs: Trap[] = [];
+      for (const trap of traps) {
+        trapPacked.push(trap.distance, trap.lane, trap.ownerId === player.id ? 0 : 1);
+        trapRefs.push(trap);
+      }
+
+      const result = tuning.detectPlayerInteractionsBatch(
+        player.distance,
+        player.lane,
+        Float32Array.from(aiPacked),
+        Float32Array.from(trapPacked),
+        TRACK_LENGTH,
+      );
+      if (result.length === 4) {
+        let handled = false;
+        const aiIdx = Math.round(result[0] ?? -1);
+        const aiDist = Number(result[1] ?? 0);
+        if (carContactReady && aiIdx >= 0 && aiIdx < aiRefs.length) {
+          const ai = aiRefs[aiIdx];
+          const impact = 0.86 - (difficultyPreset.playerRecoveryPenalty - 1) * 0.08;
+          player.speed *= impact;
+          ai.speed *= impact;
+          player.speed = Math.max(player.speed, 36);
+          ai.speed = Math.max(ai.speed, 48);
+          if (aiDist > 0) {
+            player.lane -= 0.035;
+          } else {
+            player.lane += 0.035;
+          }
+          if (player.speed > 260) {
+            player.stunMs = Math.max(player.stunMs, 140 + (hazardScale - 1) * 120);
+            nitro = Math.max(0, nitro - (4 + (hazardScale - 1) * 6));
+          }
+          breakCombo('碰撞失误');
+          playerCarContactCooldownMs = 340;
+          handled = true;
+        }
+
+        const trapIdx = Math.round(result[2] ?? -1);
+        if (!handled && trapContactReady && trapIdx >= 0 && trapIdx < trapRefs.length) {
+          const trap = trapRefs[trapIdx];
+          if (player.shieldMs > 0) {
+            player.shieldMs = 0;
+          } else {
+            player.stunMs = Math.max(player.stunMs, (760 + 160 * difficultyPreset.playerRecoveryPenalty) * hazardScale);
+            player.speed *= clamp(0.52 - (difficultyPreset.playerRecoveryPenalty - 1) * 0.07 - (hazardScale - 1) * 0.08, 0.34, 0.58);
+            player.speed = Math.max(player.speed, 32);
+            breakCombo('踩陷阱');
+            pushMessage('踩到香蕉了');
+          }
+          trap.ttlMs = 0;
+          playerTrapContactCooldownMs = 380;
+        }
+        return;
+      }
+    }
+
+    let handledCarContact = false;
     for (let i = 1; i < cars.length; i += 1) {
+      if (!carContactReady) {
+        break;
+      }
       if (airborne) {
         break;
       }
@@ -1899,6 +2605,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         const impact = 0.86 - (difficultyPreset.playerRecoveryPenalty - 1) * 0.08;
         player.speed *= impact;
         ai.speed *= impact;
+        player.speed = Math.max(player.speed, 36);
+        ai.speed = Math.max(ai.speed, 48);
         if (dist > 0) {
           player.lane -= 0.035;
         } else {
@@ -1909,7 +2617,14 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
           nitro = Math.max(0, nitro - (4 + (hazardScale - 1) * 6));
         }
         breakCombo('碰撞失误');
+        playerCarContactCooldownMs = 340;
+        handledCarContact = true;
+        break;
       }
+    }
+
+    if (handledCarContact || !trapContactReady) {
+      return;
     }
 
     for (const trap of traps) {
@@ -1926,10 +2641,13 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         } else {
           player.stunMs = Math.max(player.stunMs, (760 + 160 * difficultyPreset.playerRecoveryPenalty) * hazardScale);
           player.speed *= clamp(0.52 - (difficultyPreset.playerRecoveryPenalty - 1) * 0.07 - (hazardScale - 1) * 0.08, 0.34, 0.58);
+          player.speed = Math.max(player.speed, 32);
           breakCombo('踩陷阱');
           pushMessage('踩到香蕉了');
         }
         trap.ttlMs = 0;
+        playerTrapContactCooldownMs = 380;
+        break;
       }
     }
   }
@@ -1965,11 +2683,28 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     }
 
     if (item === 'rocket') {
-      const target = cars
-        .filter((car) => car.id !== user.id)
-        .map((car) => ({ car, dist: normalizeDistance(car.distance - user.distance) }))
-        .filter((pair) => pair.dist > 0 && pair.dist < 820)
-        .sort((a, b) => a.dist - b.dist)[0];
+      const candidates = cars.filter((car) => car.id !== user.id);
+      let target: { car: CarState; dist: number } | undefined;
+      if (tuning.selectNearestAheadTargetIndex) {
+        const idx = tuning.selectNearestAheadTargetIndex(
+          user.distance,
+          Float32Array.from(candidates.map((car) => car.distance)),
+          820,
+          TRACK_LENGTH,
+        );
+        if (idx >= 0 && idx < candidates.length) {
+          const car = candidates[idx];
+          target = {
+            car,
+            dist: normalizeDistance(car.distance - user.distance),
+          };
+        }
+      } else {
+        target = candidates
+          .map((car) => ({ car, dist: normalizeDistance(car.distance - user.distance) }))
+          .filter((pair) => pair.dist > 0 && pair.dist < 820)
+          .sort((a, b) => a.dist - b.dist)[0];
+      }
 
       if (!target) {
         if (user.isPlayer) {
@@ -2109,6 +2844,11 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const driftNorm = drifting ? 1 : 0;
     const rivalSurgeNorm = clamp(rivalSurgeMs / (RIVAL_SURGE_BASE_MS + 1200), 0, 1);
+    const obstacleImpactNorm = clamp(
+      (obstacleImpactMs / OBSTACLE_IMPACT_HEAVY_MS) * (0.6 + obstacleImpactStrength * 0.7),
+      0,
+      1.2,
+    );
     const overtakeState = getOvertakeCameraState(player);
     overtakeFxIntensity = lerp(overtakeFxIntensity, overtakeState.intensity, 0.18);
     if (overtakeState.intensity > 0.18) {
@@ -2129,13 +2869,23 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     const lossJitterY = Math.cos(raceTimeMs * (0.078 + overtakeLossNorm * 0.05)) * (0.5 + overtakeLossNorm * 1.8);
     const rivalSurgeJitterX = Math.sin(raceTimeMs * (0.092 + rivalSurgeNorm * 0.06)) * (0.5 + rivalSurgeNorm * 2.3) * rivalSurgeSide;
     const rivalSurgeJitterY = Math.cos(raceTimeMs * (0.066 + rivalSurgeNorm * 0.05)) * (0.3 + rivalSurgeNorm * 1.3);
-    const cameraJitterX = cameraJitterXBase + overtakeJitterX + lossJitterX + rivalSurgeJitterX;
-    const cameraJitterY = cameraJitterYBase + overtakeJitterY + lossJitterY + rivalSurgeJitterY;
+    const impactJitterX =
+      Math.sin(raceTimeMs * (0.19 + obstacleImpactNorm * 0.12)) *
+      (1.1 + obstacleImpactNorm * 6.4) *
+      obstacleImpactSide *
+      obstacleImpactNorm;
+    const impactJitterY =
+      Math.cos(raceTimeMs * (0.15 + obstacleImpactNorm * 0.08)) *
+      (0.8 + obstacleImpactNorm * 4.2) *
+      obstacleImpactNorm;
+    const cameraJitterX = cameraJitterXBase + overtakeJitterX + lossJitterX + rivalSurgeJitterX + impactJitterX;
+    const cameraJitterY = cameraJitterYBase + overtakeJitterY + lossJitterY + rivalSurgeJitterY + impactJitterY;
     const cameraLean =
       driftDirection * driftNorm * (5 + speedNorm * 8) +
       overtakeFxSide * overtakeFx * (isNearCamera ? 2.6 : 1.4) +
       -overtakeLossSide * overtakeLossNorm * (isNearCamera ? 3.2 : 1.8) +
-      rivalSurgeSide * rivalSurgeNorm * (isNearCamera ? 1.4 : 0.8);
+      rivalSurgeSide * rivalSurgeNorm * (isNearCamera ? 1.4 : 0.8) +
+      obstacleImpactSide * obstacleImpactNorm * (isNearCamera ? 5.6 : 3.2);
     const cameraDistance =
       (isNearCamera ? 0.74 : 1.02) *
       (1 - overtakeCompression * (isNearCamera ? 0.48 : 0.32) + lossPull * (isNearCamera ? 0.9 : 0.62));
@@ -2495,12 +3245,14 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     renderSpeedVignette(renderCtx, width, height, speedNorm, clamp(player.boostMs / 850, 0, 1));
     renderSceneAtmosphere(renderCtx, width, height, baseDistance, speedNorm);
     renderWeatherEffects(renderCtx, width, height, speedNorm, currentWeather);
-    const edgeDistortionIntensity = clamp(overtakeFx + rivalSurgeNorm * 0.42, 0, 1);
-    const edgeDistortionSide = overtakeFx > 0.12 ? overtakeFxSide : rivalSurgeSide;
+    const edgeDistortionIntensity = clamp(overtakeFx + rivalSurgeNorm * 0.42 + obstacleImpactNorm * 0.65, 0, 1.2);
+    const edgeDistortionSide =
+      obstacleImpactNorm > 0.16 ? obstacleImpactSide : overtakeFx > 0.12 ? overtakeFxSide : rivalSurgeSide;
     renderEdgeDistortion(renderCtx, width, height, edgeDistortionIntensity, edgeDistortionSide, speedNorm, boostNorm);
     renderOvertakeFlash(renderCtx, width, height, overtakeBurstNorm, overtakeFxSide);
     renderOvertakeLossShock(renderCtx, width, height, overtakeLossNorm, overtakeLossSide);
     renderRivalSurgePulse(renderCtx, width, height, rivalSurgeNorm, rivalSurgeSide);
+    renderObstacleImpactShock(renderCtx, width, height, obstacleImpactNorm, obstacleImpactSide);
 
     if (countdownMs > 0) {
       const countdownText = countdownMs > 2200 ? '3' : countdownMs > 1400 ? '2' : countdownMs > 600 ? '1' : 'GO';
@@ -2964,20 +3716,48 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
   function renderCars(renderCtx: CanvasRenderingContext2D, width: number, height: number, cameraLane: number): void {
     const player = cars[0];
     const mobileView = options.mobile;
+    if (countdownMs > 0) {
+      const lineupY = height * (mobileView ? 0.8 : 0.82);
+      const lineupSpread = mobileView ? 168 : 320;
+      for (let i = 1; i < cars.length; i += 1) {
+        const ai = cars[i];
+        const laneDeltaRaw = ai.lane - cameraLane;
+        const laneSign = laneDeltaRaw === 0 ? (i % 2 === 0 ? 1 : -1) : Math.sign(laneDeltaRaw);
+        // Expand spacing near center so countdown grid does not look crowded.
+        const displayLane = laneSign * (0.24 + Math.abs(laneDeltaRaw) * 0.92);
+        const x = width * 0.5 + displayLane * lineupSpread;
+        const y = lineupY - Math.abs(displayLane) * (mobileView ? 8 : 14);
+        const tilt = clamp(displayLane * 0.12, -0.1, 0.1);
+        const lineupScale = mobileView ? 0.94 : 1.56;
+        drawCarSprite(
+          renderCtx,
+          x,
+          y,
+          lineupScale,
+          ai.shieldMs > 0 ? '#53d7ff' : '#f48a48',
+          '#ffd08d',
+          tilt,
+          0,
+          ai.shieldMs > 0,
+        );
+      }
+      return;
+    }
+
     const renderDistance = mobileView ? 3400 : 2800;
     const farMarkerDistance = mobileView ? 12_800 : 9_800;
     const farRenderLimit = mobileView ? 5 : 6;
     const laneSpreadBase = mobileView ? 246 : 290;
     const laneSpreadDepth = mobileView ? 92 : 120;
-    const carYBase = mobileView ? 0.22 : 0.26;
-    const carYSpan = mobileView ? 0.74 : 0.68;
+    const carYBase = mobileView ? 0.24 : 0.24;
+    const carYSpan = mobileView ? 0.56 : 0.58;
     const visibleAi = cars
       .slice(1)
       .map((ai) => {
         const rawRel = normalizeDistance(ai.distance - player.distance);
         return { ai, rawRel, laneDelta: ai.lane - cameraLane };
       })
-      .filter((entry) => entry.rawRel >= 20)
+      .filter((entry) => entry.rawRel >= -8)
       .sort((a, b) => a.rawRel - b.rawRel);
     let farRendered = 0;
 
@@ -2994,7 +3774,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         const farDepth = clamp(1 - rel / farMarkerDistance, 0.04, 0.22);
         const markerY = height * (mobileView ? 0.2 : 0.19) + farDepth * height * 0.4;
         const markerX = width * 0.5 + laneDelta * (mobileView ? 58 : 72) * (0.72 + farDepth * 2.5);
-        const markerSize = clamp((mobileView ? 5.2 : 5.8) + farDepth * 1.8, mobileView ? 5.4 : 6, mobileView ? 6.4 : 7);
+        const markerSize = clamp((mobileView ? 5.2 : 7.0) + farDepth * (mobileView ? 1.8 : 2.6), mobileView ? 5.4 : 7.2, mobileView ? 6.4 : 9.2);
         const markerColor = ai.finished ? '#63f0a8' : '#ff965f';
 
         renderCtx.fillStyle = 'rgba(8, 16, 26, 0.62)';
@@ -3019,10 +3799,10 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         continue;
       }
 
-      const depth = 1 - rel / renderDistance;
+      const depth = clamp(1 - rel / renderDistance, 0.04, 1);
       const y = height * carYBase + depth * depth * height * carYSpan;
       const x = width * 0.5 + laneDelta * depth * (laneSpreadBase + depth * laneSpreadDepth);
-      const scale = mobileView ? clamp(0.44 + depth * 0.56, 0.44, 1.0) : 0.42 + depth * 1.03;
+      const scale = mobileView ? clamp(0.44 + depth * 0.56, 0.44, 1.0) : clamp(0.64 + depth * 1.42, 0.64, 1.96);
       const tilt = clamp(laneDelta * 0.36, -0.22, 0.22);
       drawCarSprite(
         renderCtx,
@@ -3138,13 +3918,14 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     playerScreenLane: number,
   ): void {
     const mobileView = options.mobile;
+    const inCountdown = countdownMs > 0;
     const boostNorm = clamp(player.boostMs / 900, 0, 1);
     const draftNorm = clamp(draftingMs / 1200, 0, 1);
     const airNorm = clamp(playerAirMs / 720, 0, 1);
     const airArc = 1 - Math.abs(airNorm * 2 - 1);
     const jumpLift = airArc * (26 + speedNorm * 18);
     const x = width * 0.5 + playerScreenLane * (mobileView ? 88 : 132);
-    const yBase = mobileView ? 0.8 : 0.82;
+    const yBase = inCountdown ? (mobileView ? 0.79 : 0.81) : mobileView ? 0.8 : 0.82;
     const y = height * (yBase + Math.sin(raceTimeMs * 0.03) * speedNorm * 0.0035 - boostNorm * 0.006) - jumpLift;
     const tilt = currentInput.steer * 0.26 + driftDirection * (drifting ? 0.08 : 0);
 
@@ -3163,7 +3944,7 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       renderCtx.fillRect(x - 120, y - 92, 240, 170);
     }
 
-    const playerScale = mobileView ? 1.08 : 1.34;
+    const playerScale = inCountdown ? (mobileView ? 0.98 : 1.72) : mobileView ? 1.08 : 2.05;
     drawCarSprite(
       renderCtx,
       x,
@@ -3351,7 +4132,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     }
 
     const rainAlphaScale = options.mobile ? 0.72 : 1;
-    const drops = Math.round(42 + speedNorm * 40);
+    const quality = clamp(dynamicDrawDistance / drawDistance, 0.68, 1);
+    const drops = Math.round((options.mobile ? 28 : 34) + speedNorm * (options.mobile ? 22 : 28) * quality);
     renderCtx.strokeStyle = `rgba(184, 224, 246, ${(0.16 + speedNorm * 0.12) * rainAlphaScale})`;
     renderCtx.lineWidth = 1 + speedNorm * 1.4;
     for (let i = 0; i < drops; i += 1) {
@@ -3590,6 +4372,61 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     renderCtx.fillRect(0, 0, width, height);
   }
 
+  function renderObstacleImpactShock(
+    renderCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    impactNorm: number,
+    side: -1 | 1,
+  ): void {
+    if (impactNorm < 0.06) {
+      return;
+    }
+
+    const edgeWidth = width * (0.15 + impactNorm * 0.1);
+    const sideGrad = renderCtx.createLinearGradient(side > 0 ? width - edgeWidth : 0, 0, side > 0 ? width : edgeWidth, 0);
+    if (side > 0) {
+      sideGrad.addColorStop(0, 'rgba(255, 168, 136, 0)');
+      sideGrad.addColorStop(1, `rgba(255, 168, 136, ${0.16 + impactNorm * 0.28})`);
+    } else {
+      sideGrad.addColorStop(0, `rgba(255, 168, 136, ${0.16 + impactNorm * 0.28})`);
+      sideGrad.addColorStop(1, 'rgba(255, 168, 136, 0)');
+    }
+    renderCtx.fillStyle = sideGrad;
+    renderCtx.fillRect(side > 0 ? width - edgeWidth : 0, 0, edgeWidth, height);
+
+    const centerX = width * (0.5 + side * 0.09);
+    const centerY = height * 0.68;
+    const pulse = renderCtx.createRadialGradient(
+      centerX,
+      centerY,
+      width * 0.02,
+      centerX,
+      centerY,
+      width * (0.18 + impactNorm * 0.2),
+    );
+    pulse.addColorStop(0, `rgba(255, 238, 218, ${0.2 + impactNorm * 0.28})`);
+    pulse.addColorStop(0.56, `rgba(255, 154, 112, ${0.14 + impactNorm * 0.22})`);
+    pulse.addColorStop(1, 'rgba(255, 154, 112, 0)');
+    renderCtx.fillStyle = pulse;
+    renderCtx.fillRect(0, 0, width, height);
+
+    renderCtx.save();
+    renderCtx.globalCompositeOperation = 'screen';
+    renderCtx.strokeStyle = `rgba(255, 216, 182, ${0.14 + impactNorm * 0.2})`;
+    renderCtx.lineWidth = 1.2 + impactNorm * 2.2;
+    for (let i = 0; i < 8; i += 1) {
+      const y = height * (0.24 + i * 0.08);
+      const x0 = centerX + side * (12 + i * (5 + impactNorm * 3));
+      const x1 = x0 + side * (22 + impactNorm * 34);
+      renderCtx.beginPath();
+      renderCtx.moveTo(x0, y);
+      renderCtx.lineTo(x1, y + 6 + impactNorm * 12);
+      renderCtx.stroke();
+    }
+    renderCtx.restore();
+  }
+
   function renderTraps(renderCtx: CanvasRenderingContext2D, width: number, height: number, baseDistance: number, baseLane: number): void {
     const renderDistance = 1900;
 
@@ -3618,7 +4455,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     baseDistance: number,
     baseLane: number,
   ): void {
-    const renderDistance = 2200;
+    const renderDistance = options.mobile ? 1880 : 2050;
+    const obstacleScale = options.mobile ? MOBILE_OBSTACLE_RENDER_SCALE : DESKTOP_OBSTACLE_RENDER_SCALE;
 
     for (const zone of resolvedTrackZones) {
       if (zone.type !== 'obstacle') {
@@ -3638,26 +4476,59 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         const depth = 1 - rel / renderDistance;
         const y = height * 0.295 + depth * depth * height * 0.64;
         const x = width * 0.5 + (lanes[i] - baseLane) * depth * 286;
-        const size = 4 + depth * 14;
+        const size = (5.2 + depth * 16.2) * obstacleScale;
         const bodyH = size * 1.76;
         const bodyWBottom = size * 1.2;
         const bodyWTop = bodyWBottom * 0.64;
+        const sideDir = x >= width * 0.5 ? 1 : -1;
+        const sideDx = bodyWBottom * 0.3 * sideDir;
+        const sideDy = bodyH * 0.12;
 
         renderCtx.fillStyle = `rgba(0, 0, 0, ${0.16 + depth * 0.1})`;
         renderCtx.beginPath();
         renderCtx.ellipse(x, y + bodyH * 0.72, bodyWBottom * 0.94, bodyH * 0.23, 0, 0, Math.PI * 2);
         renderCtx.fill();
 
-        const barrelGrad = renderCtx.createLinearGradient(x, y - bodyH, x, y + bodyH * 0.32);
-        barrelGrad.addColorStop(0, '#ff9b68');
-        barrelGrad.addColorStop(0.55, '#ff6d4f');
-        barrelGrad.addColorStop(1, '#cc4936');
-        renderCtx.fillStyle = barrelGrad;
+        renderCtx.fillStyle = `rgba(152, 64, 50, ${0.62 + depth * 0.2})`;
+        renderCtx.beginPath();
+        if (sideDir > 0) {
+          renderCtx.moveTo(x + bodyWTop, y - bodyH * 0.88);
+          renderCtx.lineTo(x + bodyWBottom, y + bodyH * 0.72);
+          renderCtx.lineTo(x + bodyWBottom + sideDx, y + bodyH * 0.72 - sideDy);
+          renderCtx.lineTo(x + bodyWTop + sideDx * 0.86, y - bodyH * 0.88 - sideDy * 0.86);
+        } else {
+          renderCtx.moveTo(x - bodyWTop, y - bodyH * 0.88);
+          renderCtx.lineTo(x - bodyWBottom, y + bodyH * 0.72);
+          renderCtx.lineTo(x - bodyWBottom + sideDx, y + bodyH * 0.72 - sideDy);
+          renderCtx.lineTo(x - bodyWTop + sideDx * 0.86, y - bodyH * 0.88 - sideDy * 0.86);
+        }
+        renderCtx.closePath();
+        renderCtx.fill();
+
+        renderCtx.fillStyle = `rgba(242, 108, 76, ${0.74 + depth * 0.18})`;
         renderCtx.beginPath();
         renderCtx.moveTo(x - bodyWTop, y - bodyH * 0.88);
         renderCtx.lineTo(x + bodyWTop, y - bodyH * 0.88);
         renderCtx.lineTo(x + bodyWBottom, y + bodyH * 0.72);
         renderCtx.lineTo(x - bodyWBottom, y + bodyH * 0.72);
+        renderCtx.closePath();
+        renderCtx.fill();
+
+        renderCtx.fillStyle = `rgba(124, 44, 36, ${0.26 + depth * 0.22})`;
+        renderCtx.beginPath();
+        renderCtx.moveTo(x - bodyWTop * 0.74, y - bodyH * 0.64);
+        renderCtx.lineTo(x + bodyWTop * 0.74, y - bodyH * 0.64);
+        renderCtx.lineTo(x + bodyWBottom * 0.78, y + bodyH * 0.36);
+        renderCtx.lineTo(x - bodyWBottom * 0.78, y + bodyH * 0.36);
+        renderCtx.closePath();
+        renderCtx.fill();
+
+        renderCtx.fillStyle = `rgba(255, 198, 122, ${0.46 + depth * 0.22})`;
+        renderCtx.beginPath();
+        renderCtx.moveTo(x - bodyWTop * 0.88, y - bodyH * 0.88);
+        renderCtx.lineTo(x + bodyWTop * 0.88, y - bodyH * 0.88);
+        renderCtx.lineTo(x + bodyWTop * 0.64 + sideDx * 0.18, y - bodyH * 1.02 - sideDy * 0.16);
+        renderCtx.lineTo(x - bodyWTop * 0.64 + sideDx * 0.18, y - bodyH * 1.02 - sideDy * 0.16);
         renderCtx.closePath();
         renderCtx.fill();
 
@@ -3680,10 +4551,16 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
         }
 
         const lampPulse = 0.5 + Math.sin((raceTimeMs + zone.start + i * 240) * 0.012) * 0.5;
-        renderCtx.fillStyle = `rgba(255, 236, 156, ${0.34 + lampPulse * 0.58})`;
+        renderCtx.fillStyle = `rgba(255, 236, 156, ${0.4 + lampPulse * 0.52})`;
         renderCtx.beginPath();
-        renderCtx.arc(x, y - bodyH * 0.95, size * 0.19, 0, Math.PI * 2);
+        renderCtx.arc(x + sideDx * 0.1, y - bodyH * 0.98, size * 0.21, 0, Math.PI * 2);
         renderCtx.fill();
+
+        renderCtx.strokeStyle = `rgba(255, 182, 138, ${0.24 + depth * 0.22})`;
+        renderCtx.lineWidth = Math.max(1, size * 0.07);
+        renderCtx.beginPath();
+        renderCtx.ellipse(x, y + bodyH * 0.72, bodyWBottom * 0.88, bodyH * 0.2, 0, 0, Math.PI * 2);
+        renderCtx.stroke();
       }
     }
   }
@@ -3725,7 +4602,8 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
     baseDistance: number,
     baseLane: number,
   ): void {
-    const renderDistance = 2200;
+    const renderDistance = options.mobile ? 1880 : 2050;
+    const obstacleScale = options.mobile ? MOBILE_OBSTACLE_RENDER_SCALE : DESKTOP_OBSTACLE_RENDER_SCALE;
     const near = getDynamicObstaclesNearDistance(baseDistance, renderDistance);
     for (const { obstacle, worldDistance } of near) {
       const rel = worldDistance - baseDistance;
@@ -3736,25 +4614,48 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       const lane = dynamicObstacleLane(obstacle, raceTimeMs) * difficultyPreset.movingObstacleFactor;
       const y = height * 0.295 + depth * depth * height * 0.64;
       const x = width * 0.5 + (lane - baseLane) * depth * 286;
-      const size = (4 + depth * 14) * obstacle.size;
+      const size = (4.8 + depth * 15.6) * obstacle.size * obstacleScale;
       const bodyW = size * 1.28;
       const bodyH = size * 1.1;
       const pulse = 0.5 + Math.sin((raceTimeMs + obstacle.phaseMs) * 0.01) * 0.5;
       const stripeShift = ((raceTimeMs + obstacle.phaseMs) / 280) % 1;
+      const sideDir = x >= width * 0.5 ? 1 : -1;
+      const sideDx = bodyW * 0.24 * sideDir;
+      const sideDy = bodyH * 0.14;
 
       renderCtx.fillStyle = `rgba(0, 0, 0, ${0.15 + depth * 0.1})`;
       renderCtx.beginPath();
       renderCtx.ellipse(x, y + bodyH * 0.9, bodyW * 0.94, bodyH * 0.26, 0, 0, Math.PI * 2);
       renderCtx.fill();
 
-      const bodyGrad = renderCtx.createLinearGradient(x - bodyW, y - bodyH, x + bodyW, y + bodyH);
-      bodyGrad.addColorStop(0, '#f5924d');
-      bodyGrad.addColorStop(0.52, '#ef5f4f');
-      bodyGrad.addColorStop(1, '#b94147');
-      renderCtx.fillStyle = bodyGrad;
+      renderCtx.fillStyle = `rgba(146, 60, 70, ${0.62 + depth * 0.2})`;
+      renderCtx.beginPath();
+      if (sideDir > 0) {
+        renderCtx.moveTo(x + bodyW * 0.5, y - bodyH * 0.84);
+        renderCtx.lineTo(x + bodyW * 0.5, y + bodyH * 0.66);
+        renderCtx.lineTo(x + bodyW * 0.5 + sideDx, y + bodyH * 0.66 - sideDy);
+        renderCtx.lineTo(x + bodyW * 0.5 + sideDx, y - bodyH * 0.84 - sideDy);
+      } else {
+        renderCtx.moveTo(x - bodyW * 0.5, y - bodyH * 0.84);
+        renderCtx.lineTo(x - bodyW * 0.5, y + bodyH * 0.66);
+        renderCtx.lineTo(x - bodyW * 0.5 + sideDx, y + bodyH * 0.66 - sideDy);
+        renderCtx.lineTo(x - bodyW * 0.5 + sideDx, y - bodyH * 0.84 - sideDy);
+      }
+      renderCtx.closePath();
+      renderCtx.fill();
+
+      renderCtx.fillStyle = `rgba(238, 98, 84, ${0.74 + depth * 0.18})`;
       renderCtx.beginPath();
       appendRoundRectPath(renderCtx, x - bodyW * 0.5, y - bodyH * 0.84, bodyW, bodyH * 1.5, bodyH * 0.22);
       renderCtx.fill();
+
+      renderCtx.fillStyle = `rgba(120, 42, 56, ${0.24 + depth * 0.22})`;
+      renderCtx.beginPath();
+      appendRoundRectPath(renderCtx, x - bodyW * 0.36, y - bodyH * 0.56, bodyW * 0.72, bodyH * 1.02, bodyH * 0.18);
+      renderCtx.fill();
+
+      renderCtx.fillStyle = `rgba(255, 204, 122, ${0.34 + depth * 0.22})`;
+      renderCtx.fillRect(x - bodyW * 0.44, y - bodyH * 0.92, bodyW * 0.88, bodyH * 0.14);
 
       renderCtx.strokeStyle = 'rgba(255, 226, 190, 0.82)';
       renderCtx.lineWidth = Math.max(1, size * 0.14);
@@ -3772,6 +4673,12 @@ export function createFallbackEngine(options: EngineInitOptions, tuning: Fallbac
       renderCtx.beginPath();
       renderCtx.arc(beaconX, y - bodyH * 0.92, size * 0.16, 0, Math.PI * 2);
       renderCtx.fill();
+
+      renderCtx.strokeStyle = `rgba(255, 174, 146, ${0.22 + depth * 0.2})`;
+      renderCtx.lineWidth = Math.max(1, size * 0.06);
+      renderCtx.beginPath();
+      renderCtx.ellipse(x, y + bodyH * 0.92, bodyW * 0.9, bodyH * 0.24, 0, 0, Math.PI * 2);
+      renderCtx.stroke();
     }
   }
 
@@ -3835,9 +4742,6 @@ function simulatePlayerStepFallback(
   if (brake) {
     acc -= 720;
   }
-  if (!throttle && !brake && speed < CRUISE_SPEED) {
-    acc += 190;
-  }
   if (stunned) {
     acc -= 380;
   }
@@ -3850,7 +4754,7 @@ function simulatePlayerStepFallback(
 
   const dtSec = Math.max(0, dtMs) / 1000;
   let nextSpeed = clamp(speed + acc * dtSec, 0, MAX_SPEED * 1.2);
-  if (!brake && nextSpeed < 42) {
+  if (!brake && throttle && nextSpeed < 42) {
     nextSpeed = 42;
   }
 
@@ -3865,6 +4769,42 @@ function simulatePlayerStepFallback(
   return {
     speed: nextSpeed,
     lane: clamp(nextLane, -1.6, 1.6),
+  };
+}
+
+function simulateAiStepFallback(
+  speed: number,
+  lane: number,
+  targetLane: number,
+  targetSpeed: number,
+  aiRisk: number,
+  laneProfileMul: number,
+  dtMs: number,
+  blocked: boolean,
+  stunned: boolean,
+  chokeMin: number,
+  chokeMax: number,
+  hasChoke: boolean,
+  cliffGust: number,
+): { speed: number; lane: number } {
+  const dtRatio = Math.max(0, dtMs) / FIXED_STEP_MS;
+  const laneStep = (0.015 + aiRisk * 0.015) * laneProfileMul;
+  let nextLane = lane + clamp(targetLane - lane, -laneStep, laneStep) * dtRatio;
+  if (hasChoke) {
+    nextLane = clamp(nextLane, chokeMin - 0.02, chokeMax + 0.02);
+  }
+
+  const speedRate = 0.013 + aiRisk * 0.005 + (blocked ? 0.002 : 0);
+  let nextSpeed = speed + clamp((targetSpeed - speed) * speedRate, -20, 20) * dtRatio;
+  if (stunned) {
+    nextSpeed *= 0.95;
+  }
+  nextSpeed = clamp(nextSpeed, 66, MAX_SPEED * 1.08);
+
+  nextLane += cliffGust * 0.00042 * dtMs;
+  return {
+    speed: nextSpeed,
+    lane: nextLane,
   };
 }
 
